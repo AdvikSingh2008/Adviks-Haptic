@@ -97,11 +97,11 @@ CXXFLAGS += $(shell $(PYTHON) -c "import sysconfig; print('-I' + sysconfig.get_p
 
 LDFLAGS += $(shell $(PYTHON) -c "import sysconfig; print('-L' + sysconfig.get_config_var('LIBDIR'))")
 
-LDLIBS += -lpython3.11
+LDLIBS += -lpython3.14
 # Band-aid fix, need to find permanent fix 
 
-CXXFLAGS += -I$(TOP_DIR)/extras/GLFW/include -g
+CXXFLAGS += -I$(TOP_DIR)/extras/GLFW/include -I/Library/Frameworks/Python.framework/Versions/3.14/include/python3.14 -g
 
-LDFLAGS  += -L$(TOP_DIR)/extras/GLFW/lib/release/lin-x86_64-cc 
+LDFLAGS  += -L$(TOP_DIR)/extras/GLFW/lib/release/mac-arm64-cc
 
-LDLIBS   += -lglfw -L/usr/lib/python3.11/config-3.11-x86_64-linux-gnu -L/usr/lib/x86_64-linux-gnu  -ldl  -lm 
+LDLIBS   += -lglfw -L/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/config-3.14-darwin -L/usr/lib/x86_64-linux-gnu  -ldl  -lm 
