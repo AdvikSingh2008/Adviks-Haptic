@@ -170,6 +170,10 @@ void keyCallback(GLFWwindow *a_window, int a_key, int a_scancode, int a_action,
 
 void mouseMotionCallback(GLFWwindow *a_window, double a_posX, double a_posY) {
     std::lock_guard<std::recursive_mutex> lock(sceneMutex);
+    if (handleSliderMouseMotion(a_posX, a_posY)) {
+        return;
+    }
+
     if ((selectedAtom != NULL) && (mouseState == MOUSE_SELECTION) &&
         (selectedAtom->isAnchor())) {
         // get the vector that goes from the camera to the selected point (mouse
@@ -212,6 +216,15 @@ void mouseButtonCallback(GLFWwindow *a_window, int a_button, int a_action,
     std::lock_guard<std::recursive_mutex> lock(sceneMutex);
     // store mouse position
     double x, y;
+    if (a_button == GLFW_MOUSE_BUTTON_LEFT) {
+        glfwGetCursorPos(window, &x, &y);
+        if (a_action == GLFW_PRESS && handleSliderMousePress(x, y)) {
+            return;
+        }
+        if (a_action == GLFW_RELEASE && handleSliderMouseRelease()) {
+            return;
+        }
+    }
 
     // detect for any collision between mouse and scene
     cCollisionRecorder recorder;

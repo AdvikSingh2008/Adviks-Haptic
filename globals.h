@@ -84,3 +84,7 @@ extern std::atomic<int> screenshotCounter;
 extern std::atomic<int> writeConCounter;
 
 extern std::recursive_mutex sceneMutex;
+
+bool handleSliderMousePress(double mouseX, double mouseY);
+bool handleSliderMouseMotion(double mouseX, double mouseY);
+bool handleSliderMouseRelease();

@@ -319,6 +319,7 @@ void initializeAtomPosition(Atom *new_atom);
 void initializeCalculator(int argc, char *argv[], std::array<double, 9> aseCell,
     std::array<int, 3> asePbc);
 void initializeLabels();
+void initializeSliderUI();
 void initializeHotkeyLabels();
 void initializePotentialLabel();
 void initializePotentialEnergyPlot();
@@ -351,6 +352,12 @@ void addLabel(cLabel *&label);
 
 // Update camera text
 void updateCameraLabel(cLabel *&camera_pos, cCamera *&camera);
+
+// update slider widget position
+void updateSliderUI();
+
+// get current simulation timestep from slider
+double getSimulationTimeStep();
 
 // save configuration in .con file
 void writeToCon(string fileName);
@@ -791,6 +798,8 @@ void initializeLabels() {
   addLabel(scope_upper); 
   addLabel(scope_lower);
 
+  initializeSliderUI();
+
   hapticPositionLabel->setLocalPos(0, 50);
 
   cFontPtr notificationFont = NEW_CFONT_CALIBRI_20();
@@ -927,7 +936,7 @@ void runGraphicsLoop() {
     glfwGetWindowSize(window, &width, &height); // get width and height of window
     if (!hapticDevice) {
       keyboardModeClock.stop();
-      double timeInterval = cMin(KEYBOARD_SIM_DT_MAX, keyboardModeClock.getCurrentTimeSeconds());
+      double timeInterval = cMin(getSimulationTimeStep(), keyboardModeClock.getCurrentTimeSeconds());
       keyboardModeClock.start(true);
       freqCounterHaptics.signal(1);
       initializeprevPositions();
@@ -1005,8 +1014,9 @@ void updateLabels() {
     tempKeyLabel->setLocalPos(width - 530, height - 105 - i * 35);
     tempFuncLabel->setLocalPos(width - 350, height - 105 - i * 35);
   }
-}
 
+  updateSliderUI();
+}
 void updateGraphics(void) {
   std::lock_guard<std::recursive_mutex> lock(sceneMutex);
 
@@ -1361,13 +1371,7 @@ void updateHaptics(void) {
 
   // calibrate device (if necessary)
   hapticDevice->calibrate();
-  // Track which atom is currently being moved
-  int anchor_atom = 1;
-  int anchor_atom_hold = 1;
-
   // main haptic simulation loop
-  bool button3_changed = false;
-  bool is_anchor = true;
   bool buttons[4];
   bool buttonReset[4];
   readButtons(buttons, buttonReset);
@@ -1404,10 +1408,8 @@ void updateHaptics(void) {
     // std::cout << "Starting delay...\n";
     // std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    // time step the simulation runs at in seconds - shorter timesteps are more accurate, but result in slower frames
-    // .001 is good value for uma simulations
-    // .0001 is good value for all other
-    const double DT = .001;
+    // shorter timesteps are more accurate, but result in slower frames
+    const double DT = getSimulationTimeStep();
     cVector3d force = stepSimulation(position, DT, true);
 
     /////////////////////////////////////////////////////////////////////////
@@ -1425,4 +1427,119 @@ void updateHaptics(void) {
   // Close the calculator
   delete calculatorPtr;
   calculatorPtr = nullptr;
+}
+
+//------------------------------------------------------------------------------
+// PLACEHOLDER SLIDER UI
+//------------------------------------------------------------------------------
+cLabel *sliderLabel;
+cPanel *sliderTrack;
+cPanel *sliderHandle;
+const double SLIDER_TIMESTEP_MIN = 0.0001;
+const double SLIDER_TIMESTEP_MAX = 0.0020;
+double sliderValue = (0.0010 - SLIDER_TIMESTEP_MIN) /
+                     (SLIDER_TIMESTEP_MAX - SLIDER_TIMESTEP_MIN);
+bool sliderDragging = false;
+
+void getSliderLayout(int &trackX, int &trackY, int &labelY) {
+  const int sliderWidth = 220;
+  trackX = (int)(0.5 * (width - sliderWidth));
+  trackY = height - 46;
+  labelY = height - 24;
+}
+
+double getSliderValueFromMouseX(double mouseX) {
+  const int sliderWidth = 220;
+  int trackX;
+  int trackY;
+  int labelY;
+  getSliderLayout(trackX, trackY, labelY);
+
+  double value = (mouseX - trackX) / sliderWidth;
+  if (value < 0.0) {
+    return 0.0;
+  }
+  if (value > 1.0) {
+    return 1.0;
+  }
+  return value;
+}
+
+bool isMouseOverSlider(double mouseX, double mouseY) {
+  const int sliderWidth = 220;
+  int trackX;
+  int trackY;
+  int labelY;
+  getSliderLayout(trackX, trackY, labelY);
+
+  const double uiY = height - mouseY;
+  return (mouseX >= trackX - 12 && mouseX <= trackX + sliderWidth + 12 &&
+          uiY >= trackY - 16 && uiY <= labelY + 24);
+}
+
+double getSimulationTimeStep() {
+  return SLIDER_TIMESTEP_MIN +
+         sliderValue * (SLIDER_TIMESTEP_MAX - SLIDER_TIMESTEP_MIN);
+}
+
+void initializeSliderUI() {
+  addLabel(sliderLabel);
+  sliderLabel->setText("Time Step");
+
+  sliderTrack = new cPanel();
+  sliderTrack->setSize(220, 6);
+  sliderTrack->setCornerRadius(3, 3, 3, 3);
+  sliderTrack->setColor(cColorf(0.20f, 0.20f, 0.20f));
+  sliderTrack->setTransparencyLevel(0.45f);
+  camera->m_frontLayer->addChild(sliderTrack);
+
+  sliderHandle = new cPanel();
+  sliderHandle->setSize(14, 24);
+  sliderHandle->setCornerRadius(4, 4, 4, 4);
+  sliderHandle->setColor(cColorf(0.05f, 0.35f, 0.90f));
+  sliderHandle->setTransparencyLevel(0.85f);
+  camera->m_frontLayer->addChild(sliderHandle);
+}
+
+void updateSliderUI() {
+  const int sliderWidth = 220;
+  int sliderX;
+  int trackY;
+  int sliderY;
+  getSliderLayout(sliderX, trackY, sliderY);
+
+  sliderLabel->setText("Time Step: " + cStr(getSimulationTimeStep() * 1000.0, 2) + " ms");
+  sliderLabel->setLocalPos((int)(0.5 * (width - sliderLabel->getWidth())), sliderY);
+  sliderTrack->setLocalPos(sliderX, trackY);
+  sliderHandle->setLocalPos(sliderX + (int)(sliderValue * sliderWidth) - 7, trackY - 9);
+}
+
+bool handleSliderMousePress(double mouseX, double mouseY) {
+  if (!isMouseOverSlider(mouseX, mouseY)) {
+    return false;
+  }
+
+  sliderDragging = true;
+  sliderValue = getSliderValueFromMouseX(mouseX);
+  updateSliderUI();
+  return true;
+}
+
+bool handleSliderMouseMotion(double mouseX, double mouseY) {
+  if (!sliderDragging) {
+    return false;
+  }
+
+  sliderValue = getSliderValueFromMouseX(mouseX);
+  updateSliderUI();
+  return true;
+}
+
+bool handleSliderMouseRelease() {
+  if (!sliderDragging) {
+    return false;
+  }
+
+  sliderDragging = false;
+  return true;
 }
