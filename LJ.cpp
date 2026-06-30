@@ -313,7 +313,7 @@ void initializeCamera();
 void initializeLight();
 void initializeHapticDevice();
 
-void placeAtoms(std::array<double, 9> aseCell, std::array<int, 3> asePbc, int argc, char *argv[]);
+void placeAtoms(std::array<double, 9> aseCell, std::array<int, 3> &asePbc, int argc, char *argv[]);
 Atom* initializeAtom(cTexture2dPtr texture, int atomicNumber);
 void initializeAtomPosition(Atom *new_atom);
 void initializeCalculator(int argc, char *argv[], std::array<double, 9> aseCell,
@@ -455,13 +455,31 @@ int main(int argc, char *argv[]) {
     throw std::runtime_error("First argument must be a haptic mode: \"force\", \"position\", \"standby\"");
   }
 
-  // Declare variables needed for calculator constructor (cell, pbc), atoms object 
+  // Declare variables needed for calculator constructor (cell, pbc), atoms object
   // (mass, atomic number), and placing of initial atoms (positions)
   std::array<double, 9> aseCell = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   std::array<int, 3> asePbc = {0, 0, 0};
 
+  // PBC argument (argv[5]): when this flag is true the asePbc values are forced
+  // to all zeros. When it is false (or absent) the loaded asePbc values are kept.
+  bool pbcFlag = false;
+  if (argc > 5) {
+    string pbcArg = argv[5];
+    for (char &c : pbcArg) {
+      c = tolower(c);
+    }
+    pbcFlag = (pbcArg == "true" || pbcArg == "1" || pbcArg == "t" ||
+               pbcArg == "yes" || pbcArg == "on");
+  }
+
   // PLACE ATOMS
   placeAtoms(aseCell, asePbc, argc, argv);
+
+  // If the PBC flag is true, force the asePbc values to all zeros regardless of
+  // what any loaded structure file specified.
+  if (pbcFlag) {
+    asePbc = {0, 0, 0};
+  }
 
   // determine potential if specified
   if (argc > 3) {
@@ -644,7 +662,7 @@ void initializeHapticDevice() {
   }
 }
 
-void placeAtoms(std::array<double, 9> aseCell, std::array<int, 3> asePbc, int argc, char *argv[]) {
+void placeAtoms(std::array<double, 9> aseCell, std::array<int, 3> &asePbc, int argc, char *argv[]) {
   cTexture2dPtr texture = cTexture2d::create(); // create texture
   // load texture file
   bool fileload = loadChaiResource([&](const char *path)

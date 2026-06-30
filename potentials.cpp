@@ -52,7 +52,7 @@ namespace
         std::exit(1);
     }
 
-    // Python is initialized lazily — only when the ASE calculator is first used.
+    // Python is initialized lazily, only when the ASE calculator is first used.
     // We configure it to use the bundled virtual environment so ASE and its
     // dependencies are found correctly regardless of the system Python.
     void ensurePythonInitialized() {
@@ -234,7 +234,7 @@ namespace
         return cell;
     }
 
-    // Periodic boundary conditions — one boolean per axis.
+    // Periodic boundary conditions: one boolean per axis.
     // When true, atoms that leave one side of the box reenter from the opposite side.
     PyObject *buildPbcList(const std::array<int, 3> &periodicBoundaryConditions) {
         PyObject *pbc = PyList_New(3);
@@ -255,7 +255,7 @@ namespace
     }
 
     // The kwargs string is user-supplied configuration for the calculator (e.g. model name,
-    // cutoff radius). We use ast.literal_eval rather than eval for safety — it only
+    // cutoff radius). We use ast.literal_eval rather than eval for safety: it only
     // accepts Python literals, not arbitrary code.
     PyObject *buildKwargsDict(const std::string &kwargsText) {
         if (kwargsText.empty()) {
@@ -302,7 +302,7 @@ namespace
             className = "MorsePotential";
             kwargsText.clear();
         } else if (spec == "emt") {
-            // Effective Medium Theory — a fast empirical potential for metals.
+            // Effective Medium Theory, a fast empirical potential for metals.
             moduleName = "ase.calculators.emt";
             className = "EMT";
             kwargsText.clear();
@@ -334,7 +334,7 @@ namespace
 
         ensurePythonInitialized();
 
-        // Acquire the GIL — required whenever we call into the Python C API.
+        // Acquire the GIL, required whenever we call into the Python C API.
         PyGILState_STATE gilState = PyGILState_Ensure();
 
         // CHANGE TO RELATIVE
@@ -393,7 +393,7 @@ namespace
     }
 
     // Builds the ASE Atoms object from the current atom configuration and attaches
-    // the calculator to it. This only runs once — on subsequent frames we update
+    // the calculator to it. This only runs once; on subsequent frames we update
     // positions in-place rather than rebuilding the whole object.
     PyObject* initializeCalculator(const std::vector<Atom *> &spheres,
                                    const std::array<double, 9> &cellMatrix,
@@ -456,7 +456,7 @@ namespace
     // entry holding the total potential energy.
     //
     // On the first call, the Atoms object is created. On every subsequent call,
-    // only positions are updated — rebuilding Atoms each frame would be too slow
+    // only positions are updated; rebuilding Atoms each frame would be too slow
     // and would also reset internal calculator state (e.g. neighbor lists).
     std::vector<std::vector<double>> runAseCalculation(const std::vector<Atom *> &spheres,
                                                        const std::string &moduleName,
@@ -478,7 +478,7 @@ namespace
 
         // get_forces() triggers the full energy/force evaluation inside ASE.
         // We call get_potential_energy() separately rather than extracting it from
-        // the forces result because ASE caches it after the first call — no extra cost.
+        // the forces result because ASE caches it after the first call, no extra cost.
         PyObject *forcesObject = PyObject_CallMethod(atomsObject, "get_forces", nullptr);
         if (forcesObject == nullptr) {
             Py_DECREF(atomsObject);
@@ -651,7 +651,7 @@ namespace
         return positions;
     }
 
-    // Only works on Linux — reads /proc/self/exe to determine the executable's directory.
+    // Only works on Linux: reads /proc/self/exe to determine the executable's directory.
     std::string getExecutableDir()
     {
         char buffer[4096];
@@ -750,7 +750,7 @@ AseStructureData loadAseStructure(const std::string &filename)
         throw std::runtime_error("ASE structure loader failed for \"" + filename + "\".");
     }
 
-    // Parse the script's stdout sequentially — the format is fixed and documented
+    // Parse the script's stdout sequentially; the format is fixed and documented
     // in ase_file_io.py.
     std::istringstream stream(output.str());
     int atomCount = 0;
@@ -829,7 +829,7 @@ vector<vector<double>> morseCalculator::getFandU(vector<Atom *> &spheres)
             {
                 cVector3d pos1 = spheres[j]->getLocalPos();
 
-                // Unit vector from j toward i — defines the direction of the force on atom i.
+                // Unit vector from j toward i, defines the direction of the force on atom i.
                 cVector3d dir01 = cNormalize(pos0 - pos1);
 
                 double distance = cDistance(pos0, pos1) / distanceScale;
@@ -841,7 +841,7 @@ vector<vector<double>> morseCalculator::getFandU(vector<Atom *> &spheres)
         vector<double> pushBack = {force.x(), force.y(), force.z()};
         returnVector.push_back(pushBack);
     }
-    // Each pair (i,j) was counted twice — once from i's perspective and once from j's.
+    // Each pair (i,j) was counted twice, once from i's perspective and once from j's.
     // Dividing by 2 gives the true total energy.
     vector<double> potentE = {potentialEnergy / 2};
     returnVector.push_back(potentE);
@@ -924,8 +924,8 @@ double ljCalculator::getLennardJonesForce(double distance)
 
 ////////////////////////////////// ase //////////////////////////////////////
 // The ASE calculator hands off force and energy evaluation to Python.
-// This lets us use any ASE-compatible potential — classical, semi-empirical,
-// or ML-based — without recompiling the C++ code.
+// This lets us use any ASE-compatible potential (classical, semi-empirical,
+// or ML-based) without recompiling the C++ code.
 
 aseCalculator::aseCalculator(const std::string &cName,
                              const std::array<double, 9> &cellMatrix,
