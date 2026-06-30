@@ -60,6 +60,7 @@
 #include <mutex>
 #include <atomic>
 #include <optional>
+#include <unordered_map>
 
 #include <stdexcept>
 
@@ -242,6 +243,9 @@ cThread *hapticsThread;
 // a handle to window display context
 GLFWwindow *window = NULL;
 
+// a handle to slider control window
+GLFWwindow *sliderWindow = NULL;
+
 // current width of window
 int width = 0;
 
@@ -325,7 +329,14 @@ void initializePotentialLabel();
 void initializePotentialEnergyPlot();
 void initializeHelpPanel();
 void initializeHapticThread();
+void initializeSliderUI();
 void runGraphicsLoop();
+void renderSliderWindow();
+double getSimulationTimeStep();
+void updateSliderWindowTitle();
+void sliderWindowSizeCallback(GLFWwindow *a_window, int a_width, int a_height);
+void sliderWindowCursorPosCallback(GLFWwindow *a_window, double a_posX, double a_posY);
+void sliderWindowMouseButtonCallback(GLFWwindow *a_window, int a_button, int a_action, int a_mods);
 
 // callback when the window display is resized
 void windowSizeCallback(GLFWwindow *a_window, int a_width, int a_height);
@@ -476,6 +487,7 @@ int main(int argc, char *argv[]) {
   initializeLabels();
   initializePotentialEnergyPlot();
   initializeHelpPanel();
+  initializeSliderUI();
   
   // START SIMULATION
   initializeHapticThread();
@@ -485,6 +497,10 @@ int main(int argc, char *argv[]) {
   close();
 
   // close window
+  if (sliderWindow != NULL) {
+    glfwDestroyWindow(sliderWindow);
+    sliderWindow = NULL;
+  }
   glfwDestroyWindow(window);
   window = NULL;
 
@@ -543,12 +559,23 @@ void initializeGLFW() {
     throw std::runtime_error("Failed to create window!");
   }
 
+  sliderWindow = glfwCreateWindow(340, 170, "Controls", NULL, window);
+  if (!sliderWindow) {
+    cSleepMs(1000);
+    glfwTerminate();
+    throw std::runtime_error("Failed to create slider window!");
+  }
+
   glfwGetWindowSize(window, &width, &height); // get width and height of window
   glfwSetWindowPos(window, windowX, windowY); // set position of window
+  glfwSetWindowPos(sliderWindow, windowX + windowWidth + 20, windowY);
   glfwSetKeyCallback(window, keyCallback); // set key callback
   glfwSetCursorPosCallback(window, mouseMotionCallback); // set mouse position callback
   glfwSetMouseButtonCallback(window, mouseButtonCallback); // set mouse button callback
   glfwSetWindowSizeCallback(window, windowSizeCallback); // set resize callback
+  glfwSetCursorPosCallback(sliderWindow, sliderWindowCursorPosCallback);
+  glfwSetMouseButtonCallback(sliderWindow, sliderWindowMouseButtonCallback);
+  glfwSetWindowSizeCallback(sliderWindow, sliderWindowSizeCallback);
   glfwMakeContextCurrent(window); // set current display context
   glfwSwapInterval(swapInterval); // sets the swap interval for the current display context
 }
@@ -932,7 +959,7 @@ void runGraphicsLoop() {
     glfwGetWindowSize(window, &width, &height); // get width and height of window
     if (!hapticDevice) {
       keyboardModeClock.stop();
-      double timeInterval = cMin(KEYBOARD_SIM_DT_MAX, keyboardModeClock.getCurrentTimeSeconds());
+      double timeInterval = cMin(getSimulationTimeStep(), keyboardModeClock.getCurrentTimeSeconds());
       keyboardModeClock.start(true);
       freqCounterHaptics.signal(1);
       initializeprevPositions();
@@ -940,6 +967,7 @@ void runGraphicsLoop() {
     }
     updateGraphics(); // render graphics
     glfwSwapBuffers(window); // swap buffers
+    renderSliderWindow();
     glfwPollEvents(); // process events
     freqCounterGraphics.signal(1); // signal frequency counter
   }
@@ -1428,7 +1456,7 @@ void updateHaptics(void) {
     // time step the simulation runs at in seconds - shorter timesteps are more accurate, but result in slower frames
     // .001 is good value for uma simulations
     // .0001 is good value for all other
-    const double DT = .001;
+    const double DT = getSimulationTimeStep();
     cVector3d force = stepSimulation(position, DT, true);
 
     /////////////////////////////////////////////////////////////////////////
@@ -1446,4 +1474,299 @@ void updateHaptics(void) {
   // Close the calculator
   delete calculatorPtr;
   calculatorPtr = nullptr;
+}
+
+//------------------------------------------------------------------------------
+// SLIDER CONTROL WINDOW
+//------------------------------------------------------------------------------
+struct SliderConfig {
+  string name;
+  double minValue;
+  double maxValue;
+  double defaultValue;
+  string units;
+  double displayScale;
+  int displayDigits;
+};
+
+struct SliderUI {
+  string id;
+  string name;
+  string units;
+  double minValue;
+  double maxValue;
+  double value;
+  double displayScale;
+  int displayDigits;
+  bool dragging;
+
+  double normalizedValue() const {
+    if (maxValue <= minValue) {
+      return 0.0;
+    }
+    return (value - minValue) / (maxValue - minValue);
+  }
+
+  void setNormalizedValue(double normalizedValue) {
+    double clampedValue = normalizedValue;
+    if (clampedValue < 0.0) {
+      clampedValue = 0.0;
+    }
+    if (clampedValue > 1.0) {
+      clampedValue = 1.0;
+    }
+    value = minValue + clampedValue * (maxValue - minValue);
+  }
+
+  string displayText() const {
+    return name + ": " + cStr(value * displayScale, displayDigits) + " " + units;
+  }
+};
+
+const int SLIDER_WINDOW_WIDTH = 340;
+const int SLIDER_WINDOW_HEIGHT = 170;
+const int SLIDER_WIDTH = 240;
+const int SLIDER_LEFT = 50;
+const int SLIDER_TOP = 45;
+const int SLIDER_ROW_SPACING = 52;
+
+int sliderWindowWidth = SLIDER_WINDOW_WIDTH;
+int sliderWindowHeight = SLIDER_WINDOW_HEIGHT;
+cFontPtr sliderFont;
+vector<SliderUI> sliders;
+unordered_map<string, int> sliderIndexById;
+
+// SLIDER UI STEP 1A: Add each new slider ID to this list to control display order.
+vector<string> sliderOrder = {"time_step"};
+
+// SLIDER UI STEP 1B: Add each new slider's configuration here.
+// sliderConfigs[id] = {display name, min, max, default, units, display scale, display digits}
+unordered_map<string, SliderConfig> sliderConfigs = {
+  {"time_step", {"Time Step", 0.0001, 0.0020, 0.0010, "ms", 1000.0, 2}}
+};
+
+void generateSliderUI() {
+  sliders.clear();
+  sliderIndexById.clear();
+
+  for (const string &id : sliderOrder) {
+    const SliderConfig &config = sliderConfigs[id];
+
+    SliderUI slider;
+    slider.id = id;
+    slider.name = config.name;
+    slider.units = config.units;
+    slider.minValue = config.minValue;
+    slider.maxValue = config.maxValue;
+    slider.value = config.defaultValue;
+    slider.displayScale = config.displayScale;
+    slider.displayDigits = config.displayDigits;
+    slider.dragging = false;
+
+    sliderIndexById[id] = sliders.size();
+    sliders.push_back(slider);
+  }
+}
+
+double getSliderValue(const string &id, double fallback) {
+  auto it = sliderIndexById.find(id);
+  if (it == sliderIndexById.end()) {
+    return fallback;
+  }
+  return sliders[it->second].value;
+}
+
+// SLIDER UI STEP 2: Add a getter for each slider value
+// The fallback should match that sliders default value in sliderConfigs.
+double getSimulationTimeStep() {
+  return getSliderValue("time_step", 0.0010);
+}
+
+// SLIDER UI STEP 3: Replace direct variable usage with the getter where needed.
+// Example: use getSimulationTimeStep() instead of hardcoding the timestep.
+void initializeSliderUI() {
+  sliderFont = NEW_CFONT_CALIBRI_20();
+  generateSliderUI();
+  updateSliderWindowTitle();
+}
+
+void sliderWindowSizeCallback(GLFWwindow *a_window, int a_width, int a_height) {
+  sliderWindowWidth = a_width;
+  sliderWindowHeight = a_height;
+}
+
+void getSliderLayout(int sliderIndex, double &trackX, double &trackY) {
+  trackX = SLIDER_LEFT;
+  trackY = SLIDER_TOP + sliderIndex * SLIDER_ROW_SPACING;
+}
+
+double getSliderNormalizedValueFromMouseX(int sliderIndex, double mouseX) {
+  double trackX;
+  double trackY;
+  getSliderLayout(sliderIndex, trackX, trackY);
+
+  double normalizedValue = (mouseX - trackX) / SLIDER_WIDTH;
+  if (normalizedValue < 0.0) {
+    return 0.0;
+  }
+  if (normalizedValue > 1.0) {
+    return 1.0;
+  }
+  return normalizedValue;
+}
+
+bool isMouseOverSlider(int sliderIndex, double mouseX, double mouseY) {
+  double trackX;
+  double trackY;
+  getSliderLayout(sliderIndex, trackX, trackY);
+
+  return (mouseX >= trackX - 12 && mouseX <= trackX + SLIDER_WIDTH + 12 &&
+          mouseY >= trackY - 18 && mouseY <= trackY + 18);
+}
+
+void updateSliderWindowTitle() {
+  if (sliderWindow == NULL) {
+    return;
+  }
+  glfwSetWindowTitle(sliderWindow, "Controls");
+}
+
+void drawRect(double x, double y, double w, double h, float r, float g, float b) {
+  glColor3f(r, g, b);
+  glBegin(GL_QUADS);
+  glVertex2d(x, y);
+  glVertex2d(x + w, y);
+  glVertex2d(x + w, y + h);
+  glVertex2d(x, y + h);
+  glEnd();
+}
+
+void drawSliderText(const string &text, double x, double y) {
+  if (!sliderFont) {
+    return;
+  }
+
+  cRenderOptions options;
+  options.m_camera = nullptr;
+  options.m_single_pass_only = true;
+  options.m_render_opaque_objects_only = true;
+  options.m_render_transparent_front_faces_only = false;
+  options.m_render_transparent_back_faces_only = false;
+  options.m_enable_lighting = false;
+  options.m_render_materials = false;
+  options.m_render_textures = true;
+  options.m_creating_shadow_map = false;
+  options.m_rendering_shadow = false;
+  options.m_shadow_light_level = 0.0;
+  options.m_storeObjectPositions = false;
+  options.m_markForUpdate = false;
+
+  glDisable(GL_LIGHTING);
+  glPushMatrix();
+  glTranslated(x, y, 0.0);
+  glScaled(1.0, -1.0, 1.0);
+  sliderFont->renderText(text, cColorf(0.05f, 0.05f, 0.05f), 1.0, 1.0, 1.0, options);
+  glPopMatrix();
+}
+
+void renderSliderWindow() {
+  if (sliderWindow == NULL) {
+    return;
+  }
+  if (glfwWindowShouldClose(sliderWindow)) {
+    glfwDestroyWindow(sliderWindow);
+    sliderWindow = NULL;
+    glfwMakeContextCurrent(window);
+    return;
+  }
+
+  glfwMakeContextCurrent(sliderWindow);
+  glfwGetWindowSize(sliderWindow, &sliderWindowWidth, &sliderWindowHeight);
+  glViewport(0, 0, sliderWindowWidth, sliderWindowHeight);
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0, sliderWindowWidth, sliderWindowHeight, 0, -1, 1);
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+  glDisable(GL_DEPTH_TEST);
+  glClearColor(0.94f, 0.94f, 0.94f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  for (int i = 0; i < sliders.size(); i++) {
+    const SliderUI &slider = sliders[i];
+    double trackX;
+    double trackY;
+    getSliderLayout(i, trackX, trackY);
+    const double handleX = trackX + slider.normalizedValue() * SLIDER_WIDTH;
+
+    drawSliderText(slider.displayText(), trackX, trackY - 28);
+    drawRect(trackX, trackY - 4, SLIDER_WIDTH, 8, 0.28f, 0.28f, 0.28f);
+    drawRect(trackX, trackY - 4, handleX - trackX, 8, 0.05f, 0.35f, 0.90f);
+    drawRect(handleX - 7, trackY - 15, 14, 30, 0.02f, 0.22f, 0.65f);
+  }
+
+  updateSliderWindowTitle();
+  glfwSwapBuffers(sliderWindow);
+  glfwMakeContextCurrent(window);
+}
+
+bool handleSliderMousePress(double mouseX, double mouseY) {
+  for (int i = 0; i < sliders.size(); i++) {
+    if (!isMouseOverSlider(i, mouseX, mouseY)) {
+      continue;
+    }
+
+    sliders[i].dragging = true;
+    sliders[i].setNormalizedValue(getSliderNormalizedValueFromMouseX(i, mouseX));
+    updateSliderWindowTitle();
+    return true;
+  }
+  return false;
+}
+
+bool handleSliderMouseMotion(double mouseX, double mouseY) {
+  for (int i = 0; i < sliders.size(); i++) {
+    if (!sliders[i].dragging) {
+      continue;
+    }
+
+    sliders[i].setNormalizedValue(getSliderNormalizedValueFromMouseX(i, mouseX));
+    updateSliderWindowTitle();
+    return true;
+  }
+  return false;
+}
+
+bool handleSliderMouseRelease() {
+  for (int i = 0; i < sliders.size(); i++) {
+    if (!sliders[i].dragging) {
+      continue;
+    }
+
+    sliders[i].dragging = false;
+    return true;
+  }
+  return false;
+}
+
+void sliderWindowCursorPosCallback(GLFWwindow *a_window, double a_posX, double a_posY) {
+  std::lock_guard<std::recursive_mutex> lock(sceneMutex);
+  handleSliderMouseMotion(a_posX, a_posY);
+}
+
+void sliderWindowMouseButtonCallback(GLFWwindow *a_window, int a_button, int a_action, int a_mods) {
+  if (a_button != GLFW_MOUSE_BUTTON_LEFT) {
+    return;
+  }
+
+  std::lock_guard<std::recursive_mutex> lock(sceneMutex);
+  double x;
+  double y;
+  glfwGetCursorPos(a_window, &x, &y);
+
+  if (a_action == GLFW_PRESS) {
+    handleSliderMousePress(x, y);
+  } else if (a_action == GLFW_RELEASE) {
+    handleSliderMouseRelease();
+  }
 }
