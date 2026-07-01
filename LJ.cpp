@@ -374,6 +374,7 @@ static vector<string> getResourceSearchRoots() {
 
   roots.push_back("./");
   roots.push_back("../");
+  roots.push_back("./bin/");
   roots.push_back("../bin/");
 
   return roots;
@@ -690,9 +691,9 @@ void placeAtoms(std::array<double, 9> aseCell, std::array<int, 3> asePbc, int ar
         // scale coordinates and insert
         if (hapticMode == HapticMode::Standby) {
           newAtom->setLocalPos(
-              0.02 * (positions[i][0] - centerCoords[0]) + 1, // position offset -- should probably disappear once we get boxes working
-              0.02 * (positions[i][1] - centerCoords[1]),
-              0.02 * (positions[i][2] - centerCoords[2]));
+              0.02 * (positions[i][0] - centerCoords[0]  + 0.1), // position offset -- should probably disappear once we get boxes working
+              0.02 * (positions[i][1] - centerCoords[1] + 0.1),
+              0.02 * (positions[i][2] - centerCoords[2] + 0.1) );
         } else {
           newAtom->setLocalPos(
               0.02 * (positions[i][0] - centerCoords[0]), // position offset -- should probably disappear once we get boxes working
