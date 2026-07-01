@@ -590,7 +590,6 @@ void initializeGLFW() {
   glfwSetCursorPosCallback(window, mouseMotionCallback); // set mouse position callback
   glfwSetMouseButtonCallback(window, mouseButtonCallback); // set mouse button callback
   glfwSetFramebufferSizeCallback(window, framebufferSizeCallback); // track render size on resize
-  glfwSetWindowSizeCallback(window, windowSizeCallback); // set resize callback
   glfwSetCursorPosCallback(sliderWindow, sliderWindowCursorPosCallback);
   glfwSetMouseButtonCallback(sliderWindow, sliderWindowMouseButtonCallback);
   glfwSetWindowSizeCallback(sliderWindow, sliderWindowSizeCallback);
