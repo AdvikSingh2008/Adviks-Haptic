@@ -12,6 +12,7 @@ import paramiko
 import pickle
 import numpy as np
 import struct
+import time
 
 USERNAME = "ik4335"
 REMOTE_PYTHON = f"/home/{USERNAME}/uma_env/bin/python3"
@@ -43,9 +44,13 @@ class Atoms:
         self.stdin.flush()
 
     def get_forces(self):
+        start = time.perf_counter()
         data = self.stdout.read(np.dtype(np.float64).itemsize * self.num_atoms * 3)
+        print("Latency on server side", self.stderr.readline(), end="")
+        print(f"Latency on client side: {(time.perf_counter() - start) * 1000}")
+        # print(f"Forces", self.stderr.readline(), end="")
         return np.frombuffer(data, dtype=np.float64).reshape((self.num_atoms, 3))
-    
+
     def get_potential_energy(self):
         return struct.unpack("d", self.stdout.read(8))[0]
 
@@ -53,7 +58,6 @@ class Atoms:
 # into memory, so we keep one per (model, device) alive for the whole session
 # and hand the same instance back on every subsequent call.
 _uma_predictor_cache = {}
-
 
 # Returns the cached UMA predictor for the given model and device, building it
 # lazily on first use. "turbo" inference settings trade a little accuracy for

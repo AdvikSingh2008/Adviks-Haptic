@@ -4,6 +4,7 @@ from ase.calculators.lj import LennardJones
 import sys, numpy as np
 import pickle
 import struct
+import time
 
 #predictor = pretrained_mlip.get_predict_unit(
 #    "uma-s-1p2",
@@ -22,7 +23,9 @@ atoms.calc = LennardJones()
 
 while True:
     data = sys.stdin.buffer.read(np.dtype(np.float64).itemsize * num_atoms * 3)
+    start = time.perf_counter()
     atoms.set_positions(np.frombuffer(data, dtype=np.float64).reshape((num_atoms, 3)))
     sys.stdout.buffer.write(atoms.get_forces().tobytes())
+    print((time.perf_counter() - start) * 1000, file=sys.stderr)
     sys.stdout.buffer.write(struct.pack("d", atoms.get_potential_energy()))
     sys.stdout.flush()
