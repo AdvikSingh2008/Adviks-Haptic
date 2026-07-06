@@ -406,6 +406,7 @@ namespace
             calcObject = PyObject_Call(calcClass, calcArgs, calcKwargs);
 
             Py_DECREF(calcKwargs);
+            calcKwargs = nullptr;
             Py_DECREF(calcClass);
             Py_DECREF(calcModule);
 
