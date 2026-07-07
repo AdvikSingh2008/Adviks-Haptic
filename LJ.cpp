@@ -264,6 +264,7 @@ cLabel *camera_pos;
 
 // a label to identify the potential energy surface
 cLabel *potentialLabel;
+cLabel *temperatureLabel;
 
 // labels for the scope
 cLabel *scope_upper;
@@ -337,11 +338,17 @@ cPanel *helpPanel; // panel that displays hotkeys
 cLabel *helpHeader; // help panel header
 
 std::atomic<double> displayedPotentialEnergy(0.0);
+
+std::atomic<double> displayedTemperature(0.0);
+double lastPotentialEnergy = 0.0;
+double potentialEnergyDerivative = 0.0;
+std::atomic<int> displayedAnchoredCount(0);
 std::recursive_mutex sceneMutex;
 std::atomic<bool> hapticsThreadStarted(false);
 int currentIndex = 0;
 vector<cLabel *> hotkeyKeys; // vector holding hotkey key labels
 vector<cLabel *> hotkeyFunctions; // vector holding function key labels (must be separate for formatting)
+// Energy Barrier Explorer tracking
 // screenshot notification label
 cLabel *screenshotLabel;
 
@@ -385,6 +392,7 @@ void initializeSliderUI();
 void runGraphicsLoop();
 void renderSliderWindow();
 double getSimulationTimeStep();
+double getCurrentTemp();
 void updateSliderWindowTitle();
 void sliderWindowSizeCallback(GLFWwindow *a_window, int a_width, int a_height);
 void sliderWindowCursorPosCallback(GLFWwindow *a_window, double a_posX, double a_posY);
@@ -1256,7 +1264,7 @@ void initializeLabels() {
   addLabel(isFrozen); // frozen state label
   addLabel(camera_pos); // camera position label
   addLabel(potentialLabel); // energy surface label
-
+  addLabel(temperatureLabel);
   addDebugLabel("Force magnitude: ");
   addDebugLabel("Atom pos: ");
   addDebugLabel("Nearest neighbor: ");
@@ -1281,6 +1289,9 @@ void initializeLabels() {
   writeConLabel->setText("Con file written");
 
   initializePotentialLabel();
+
+  temperatureLabel->setLocalPos(0, 90, 0);
+  temperatureLabel->setText("Temperature: 0.00000 kT");
 
   camera_pos->setLocalPos(0, 30, 0);
   updateCameraLabel(camera_pos, camera);
@@ -1498,6 +1509,9 @@ void updateLabels() {
 
   updateCameraLabel(camera_pos, camera);
   camera_pos->setShowEnabled(debugVisible);
+
+  displayedTemperature.store(getCurrentTemp());
+  temperatureLabel->setText("Temperature: " + cStr(displayedTemperature.load(), 5) + " kT");
 
   string trueFalse = freezeAtoms.load() ? "true" : "false";
   isFrozen->setText("Freeze simulation: " + trueFalse);
@@ -1801,6 +1815,36 @@ void applyBoundaryConditions(cVector3d &x_curr) {
       BOUNDARY_LIMIT);
 }
 
+cColorf getTemperatureColor(double temperature) {
+  cColorf color;
+  
+  // Clamp temperature for gradient range
+  double tempClamped = temperature;
+  if (tempClamped < -5.0) tempClamped = -5.0;
+  if (tempClamped > 5.0) tempClamped = 5.0;
+  
+  // Map -5 to 5 range into 0 to 1 gradient factor
+  double gradientFactor = (tempClamped + 5.0) / 10.0;  // 0 at -5°K, 0.5 at 0°K, 1 at 5°K
+  
+  // Vibrant green at -5/0: (0.1, 0.9, 0.1)
+  // Vibrant purple at 5: (0.85, 0.1, 0.85)
+  double greenR = 0.1;
+  double greenG = 0.9;
+  double greenB = 0.1;
+  
+  double purpleR = 0.85;
+  double purpleG = 0.1;
+  double purpleB = 0.85;
+  
+  // Smooth linear interpolation from green through cyan to purple
+  double r = greenR + (purpleR - greenR) * gradientFactor;
+  double g = greenG + (purpleG - greenG) * gradientFactor;
+  double b = greenB + (purpleB - greenB) * gradientFactor;
+  
+  color.set(r, g, b);
+  return color;
+}
+
 cVector3d getNewAtomPosition(Atom *atom, cVector3d &prev_position, const double timeInterval) {
   cVector3d x_curr = atom->getLocalPos();
   cVector3d force = atom->getForce();
@@ -1838,7 +1882,6 @@ cVector3d forceModeUpdate(Atom *current, cVector3d position, const double timeIn
   cVector3d hapticVelocity = (current->getLocalPos() - currentPrevPos) / timeInterval;
   return forceErr * K_HAPTIC - hapticVelocity * K_HAPTIC_DAMP;
 }
-
 bool prevHapticInitialized;
 cVector3d prevHapticPosition(0,0,0);
 cPrecisionClock positionClock;
@@ -2049,11 +2092,20 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
       cerr << "Error: calculatorPtr is null in stepSimulation()" << endl;
       return cVector3d(0.0, 0.0, 0.0);
     }
+    const double currentTemp = getCurrentTemp();
+    calculatorPtr->setTemperature(currentTemp);
     vector<vector<double>> forcesVec = calculatorPtr->getFandU(spheres);
     double potentialEnergy = forcesVec[spheres.size()][0];
+    if (std::isfinite(potentialEnergy)) {
+      potentialEnergyDerivative = (potentialEnergy - lastPotentialEnergy) / std::max(1e-6, timeInterval);
+      lastPotentialEnergy = potentialEnergy;
+    }
 
     for (int i = 0; i < spheres.size(); i++) {
       Atom *atom = spheres[i];
+      if (!atom->isCurrent() && !atom->isAnchor()) {
+       atom->setColor(getTemperatureColor(currentTemp));
+      }
       cVector3d force(forcesVec[i][0], forcesVec[i][1], forcesVec[i][2]);
       if (!isFiniteVector(force)) {
         force.zero();
@@ -2235,12 +2287,13 @@ vector<SliderUI> sliders;
 unordered_map<string, int> sliderIndexById;
 
 // SLIDER UI STEP 1A: Add each new slider ID to this list to control display order.
-vector<string> sliderOrder = {"time_step"};
+vector<string> sliderOrder = {"time_step", "temperature"};
 
 // SLIDER UI STEP 1B: Add each new slider's configuration here.
 // sliderConfigs[id] = {display name, min, max, default, units, display scale, display digits}
 unordered_map<string, SliderConfig> sliderConfigs = {
-  {"time_step", {"Time Step", 0.0001, 0.0020, 0.0010, "ms", 1000.0, 2}}
+  {"time_step", {"Time Step", 0.0001, 0.0020, 0.0010, "ms", 1000.0, 2}},
+  {"temperature", {"Temperature", 0.000, 15.000, 0.000, "kT", 1.0, 5}}
 };
 
 // SLIDER UI STEP 4: Wire the slider back to whatever live state it controls,
@@ -2305,6 +2358,10 @@ double getSliderValue(const string &id, double fallback) {
 // The fallback should match that sliders default value in sliderConfigs.
 double getSimulationTimeStep() {
   return getSliderValue("time_step", 0.0010);
+}
+
+double getCurrentTemp() {
+  return getSliderValue("temperature", 1.00);
 }
 
 // SLIDER UI STEP 3: Replace direct variable usage with the getter where needed.
