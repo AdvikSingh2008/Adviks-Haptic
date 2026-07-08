@@ -10,15 +10,24 @@
 int just_unanchored = 0;
 bool transparentAtoms = false;
 
-// CHAI3D renders into the framebuffer, which is measured in pixels. On HiDPI /
-// Retina displays the framebuffer is larger than the window (measured in points),
-// so cursor coordinates from GLFW (window points) must be scaled up to the same
-// pixel space as width/height before being used for picking or world math.
+// CHAI3D renders into the framebuffer, which is measured in pixels. GLFW cursor
+// coordinates are in window coordinates, so derive the conversion from the
+// actual framebuffer/window ratio. This is more reliable than content scale on
+// macOS Retina displays, where the two can diverge depending on monitor/window
+// state.
 static void scaleCursorToPixels(double &a_x, double &a_y) {
-  float xscale, yscale;
-  glfwGetWindowContentScale(window, &xscale, &yscale);
-  a_x *= xscale;
-  a_y *= yscale;
+  int windowWidth = 0;
+  int windowHeight = 0;
+  int framebufferWidth = 0;
+  int framebufferHeight = 0;
+  glfwGetWindowSize(window, &windowWidth, &windowHeight);
+  glfwGetFramebufferSize(window, &framebufferWidth, &framebufferHeight);
+  if (windowWidth <= 0 || windowHeight <= 0) {
+    return;
+  }
+
+  a_x *= static_cast<double>(framebufferWidth) / static_cast<double>(windowWidth);
+  a_y *= static_cast<double>(framebufferHeight) / static_cast<double>(windowHeight);
 }
 
 static void ensureSelectionBoxLines() {
