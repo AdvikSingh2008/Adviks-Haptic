@@ -405,10 +405,7 @@ Atom::Atom(double radius, int atomicNumber) : cShapeSphere(radius) {
 
 void Atom::refreshMaterial() {
     m_material->m_emission.set(0.0f, 0.0f, 0.0f, 1.0f);
-    if (selected) {
-        m_material->setYellowGold();
-        m_material->m_emission.set(1.0f, 0.85f, 0.0f, 1.0f);
-    } else if (current) {
+    if (selected || current) {
         m_material->setRed();
     } else if (anchor) {
         m_material->setBlue();
@@ -434,6 +431,7 @@ bool Atom::isCurrent() { return current; }
 void Atom::setCurrent(bool newCurrent) {
     if (newCurrent) {
         anchor = false;  // cannot be both anchor and current
+        selected = true; // current atoms participate in selected-atom haptics
     }
     current = newCurrent;
     refreshMaterial();

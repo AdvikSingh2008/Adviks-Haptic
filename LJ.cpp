@@ -2083,96 +2083,22 @@ cVector3d getAverageAtomGroupForce(const vector<int> &indices) {
   return force / static_cast<double>(indices.size());
 }
 
-vector<int> activeHapticSelection;
-map<int, cVector3d> activeHapticSelectionOffsets;
-
-void ensureSelectedAtomOffsets(const vector<int> &selectedIndices,
-                               const cVector3d &position) {
-  if (selectedIndices == activeHapticSelection) {
-    return;
+cVector3d addHapticForceToSelectedAtoms(const vector<int> &selectedIndices,
+                                        const cVector3d &position) {
+  if (selectedIndices.empty()) {
+    return cVector3d(0, 0, 0);
   }
 
-  activeHapticSelection = selectedIndices;
-  activeHapticSelectionOffsets.clear();
-  for (int index : selectedIndices) {
-    activeHapticSelectionOffsets[index] = spheres[index]->getLocalPos() - position;
-  }
-  prevHapticInitialized = false;
-}
-
-cVector3d getSelectedAtomTarget(int index, const cVector3d &position) {
-  return position + activeHapticSelectionOffsets[index];
-}
-
-cVector3d forceModeUpdateSelectedGroup(const vector<int> &selectedIndices,
-                                      cVector3d position,
-                                      const double timeInterval) {
-  const double K_CURRENT = K_HAPTIC_SPRING;
-  const double K_CURRENT_DAMP = K_HAPTIC_DAMPER;
-  ensureSelectedAtomOffsets(selectedIndices, position);
-
-  cVector3d averageSimulationForce = getAverageAtomGroupForce(selectedIndices);
-
+  cVector3d externalForce = position * K_HAPTIC_SPRING;
+  cVector3d averageForceBeforeHaptic = getAverageAtomGroupForce(selectedIndices);
   for (int index : selectedIndices) {
     Atom *atom = spheres[index];
-    cVector3d currentPosition = atom->getLocalPos();
-    cVector3d previousPosition = prevPositions[index];
-    cVector3d targetPosition = getSelectedAtomTarget(index, position);
-    cVector3d velocity = (currentPosition - previousPosition) / timeInterval;
-    cVector3d hapticForce = (targetPosition - currentPosition) * K_CURRENT -
-                            velocity * K_CURRENT_DAMP;
-
-    atom->setForce(atom->getForce() + hapticForce);
-    cVector3d newPosition = getNewAtomPosition(atom, previousPosition, timeInterval);
-    applyBoundaryConditions(newPosition);
-    atom->setLocalPos(newPosition);
-    prevPositions[index] = currentPosition;
+    if (!atom->isAnchor()) {
+      atom->setForce(atom->getForce() + externalForce);
+    }
   }
 
-  return averageSimulationForce;
-}
-
-cVector3d positionModeUpdateSelectedGroup(const vector<int> &selectedIndices,
-                                         cVector3d position,
-                                         const double timeInterval) {
-  const double VELOCITY_MULT = 25;
-  const double ATTRACTION_MAX = 1.5;
-  ensureSelectedAtomOffsets(selectedIndices, position);
-
-  for (int index : selectedIndices) {
-    Atom *atom = spheres[index];
-    cVector3d oldPosition = atom->getLocalPos();
-    cVector3d targetPosition = getSelectedAtomTarget(index, position);
-    cVector3d attraction = (targetPosition - oldPosition) * timeInterval * VELOCITY_MULT;
-    cVector3d newPosition = oldPosition +
-        clampVectorMagnitude(attraction, ATTRACTION_MAX * timeInterval);
-    applyBoundaryConditions(newPosition);
-    atom->setLocalPos(newPosition);
-    prevPositions[index] = oldPosition;
-  }
-  return getAverageAtomGroupForce(selectedIndices);
-}
-
-cVector3d standbyModeUpdateSelectedGroup(const vector<int> &selectedIndices,
-                                        cVector3d position,
-                                        const double timeInterval) {
-  ensureSelectedAtomOffsets(selectedIndices, position);
-  if (!prevHapticInitialized) {
-    prevHapticInitialized = true;
-    prevHapticPosition = position;
-  }
-
-  cVector3d dPHaptic = position - prevHapticPosition;
-  prevHapticPosition = position;
-  for (int index : selectedIndices) {
-    Atom *atom = spheres[index];
-    cVector3d oldPosition = atom->getLocalPos();
-    cVector3d newPosition = oldPosition + dPHaptic;
-    applyBoundaryConditions(newPosition);
-    atom->setLocalPos(newPosition);
-    prevPositions[index] = oldPosition;
-  }
-  return getAverageAtomGroupForce(selectedIndices);
+  return averageForceBeforeHaptic - externalForce;
 }
 
 void moveCurrentAtom(double rightAmount, double upAmount, double forwardAmount) {
@@ -2205,13 +2131,9 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
   cVector3d position = hasHapticDevice ? requestedPosition : current->getLocalPos();
   vector<int> selectedIndices = hasHapticDevice ? getSelectedAtomIndices() : vector<int>();
   bool useSelectedGroup = !selectedIndices.empty();
-  if (!useSelectedGroup && !activeHapticSelection.empty()) {
-    activeHapticSelection.clear();
-    activeHapticSelectionOffsets.clear();
-    prevHapticInitialized = false;
-  }
 
   cVector3d currentPosition(0,0,0);
+  cVector3d hapticForce(0, 0, 0);
   
   if (!freezeAtoms.load()) {
     if (!calculatorPtr) {
@@ -2238,10 +2160,12 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
       }
       atom->setForce(force);
     }
+    if (hasHapticDevice && useSelectedGroup) {
+      hapticForce = addHapticForceToSelectedAtoms(selectedIndices, position);
+    }
     for (int i = 0; i < spheres.size(); i++) {
       Atom *atom = spheres[i];
-      if (!atom->isCurrent() && !atom->isAnchor() &&
-          !(useSelectedGroup && atom->isSelected())) {
+      if (!atom->isAnchor()) {
         cVector3d x_curr = atom->getLocalPos();
         cVector3d new_position = getNewAtomPosition(atom, prevPositions[i], timeInterval);
         prevPositions[i] = x_curr;
@@ -2254,16 +2178,8 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
     displayedPotentialEnergy.store(potentialEnergy);
   }
 
-  
-  cVector3d hapticForce(0, 0, 0);
-  if (hasHapticDevice) {
-    if (useSelectedGroup && hapticMode == HapticMode::Force) {
-      hapticForce = forceModeUpdateSelectedGroup(selectedIndices, position, timeInterval);
-    } else if (useSelectedGroup && hapticMode == HapticMode::Standby) {
-      hapticForce = standbyModeUpdateSelectedGroup(selectedIndices, position, timeInterval);
-    } else if (useSelectedGroup && hapticMode == HapticMode::Position) {
-      hapticForce = positionModeUpdateSelectedGroup(selectedIndices, position, timeInterval);
-    } else if (hapticMode == HapticMode::Force) {
+  if (hasHapticDevice && !useSelectedGroup) {
+    if (hapticMode == HapticMode::Force) {
       hapticForce = forceModeUpdate(current, position, timeInterval);
     } else if (hapticMode == HapticMode::Standby) {
       hapticForce = standbyModeUpdate(current, position, timeInterval);
