@@ -17,12 +17,26 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 #include "atom.h"
 
 #include <filesystem>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+#if defined(_WIN32)
+// MSVC only exposes the POSIX pipe functions under their underscore-prefixed
+// names; map them so the rest of this file can use popen/pclose uniformly.
+#define popen _popen
+#define pclose _pclose
+#endif
 
 extern double centerCoords[3];
 
@@ -52,6 +66,10 @@ namespace
         std::exit(1);
     }
 
+    // Resolves the executable's directory: /proc/self/exe on Linux,
+    // _NSGetExecutablePath on macOS, GetModuleFileNameA on Windows.
+    std::string getExecutableDir();
+
     // Python is initialized lazily, only when the ASE calculator is first used.
     // We configure it to use the bundled virtual environment so ASE and its
     // dependencies are found correctly regardless of the system Python.
@@ -63,10 +81,34 @@ namespace
             config.isolated = 0;
             config.use_environment = 1;
 
-            // Let the embedded interpreter locate its own standard library and
-            // site-packages from the Python it is linked against, instead of a
-            // hardcoded "./haptic-device/uma_env/bin/python" venv that does not
-            // exist on every machine (that missing path crashed startup in getpath).
+            // Point to the venv Python so sys.path picks up the right site-packages.
+            // Resolved relative to the executable (not the current working
+            // directory) so this works regardless of where the binary is launched
+            // from, e.g. the launcher's own directory.
+            std::filesystem::path venvPython;
+            std::string executableDir = getExecutableDir();
+#if defined(_WIN32)
+            // venv created via `python -m venv` lays out Scripts/python.exe
+            // on Windows instead of the bin/python symlink used elsewhere.
+            const std::filesystem::path venvRelativePython =
+                std::filesystem::path("uma_env") / "Scripts" / "python.exe";
+#else
+            const std::filesystem::path venvRelativePython =
+                std::filesystem::path("uma_env") / "bin" / "python";
+#endif
+            if (!executableDir.empty()) {
+                venvPython = std::filesystem::path(executableDir) / ".." / ".." /
+                             "haptic-device" / venvRelativePython;
+                // Normalize lexically only -- do NOT resolve symlinks here.
+                // uma_env/bin/python is itself a symlink to the base
+                // interpreter, and CPython locates the venv by finding
+                // pyvenv.cfg next to that symlink; canonicalizing away the
+                // symlink makes it look like the system Python instead.
+                venvPython = venvPython.lexically_normal();
+            } else {
+                venvPython = std::filesystem::path("./haptic-device") / venvRelativePython;
+            }
+            config.program_name = Py_DecodeLocale(venvPython.string().c_str(), NULL);
 
             config.module_search_paths_set = 0;
 
@@ -285,19 +327,35 @@ namespace
         return parsedKwargs;
     }
 
-    // Only works on Linux: reads /proc/self/exe to determine the executable's directory.
+    // Determines the executable's directory so Python/module paths can be
+    // resolved regardless of the process's current working directory.
     std::string getExecutableDir()
     {
         char buffer[4096];
+#if defined(__APPLE__)
+        uint32_t size = sizeof(buffer);
+        if (_NSGetExecutablePath(buffer, &size) != 0)
+        {
+            return "";
+        }
+        std::string executablePath(buffer);
+#elif defined(_WIN32)
+        DWORD length = GetModuleFileNameA(NULL, buffer, sizeof(buffer));
+        if (length == 0 || length == sizeof(buffer))
+        {
+            return "";
+        }
+        std::string executablePath(buffer, length);
+#else
         ssize_t length = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
         if (length <= 0)
         {
             return "";
         }
-
         buffer[length] = '\0';
         std::string executablePath(buffer);
-        size_t separator = executablePath.find_last_of('/');
+#endif
+        size_t separator = executablePath.find_last_of("/\\");
         if (separator == std::string::npos)
         {
             return "";
@@ -683,6 +741,31 @@ namespace
 
     
 
+#if defined(_WIN32)
+    // popen() on Windows runs the command through cmd.exe, which has no
+    // concept of POSIX single-quote escaping -- a single-quoted argument is
+    // passed through literally, quotes included, and Windows then fails to
+    // find a program literally named e.g. 'python3' (with the quote
+    // characters as part of the name). Use double-quote wrapping instead,
+    // which cmd.exe and the underlying argument parser both understand.
+    std::string quoteForShell(const std::string &value)
+    {
+        std::string quoted = "\"";
+        for (char ch : value)
+        {
+            if (ch == '"')
+            {
+                quoted += "\\\"";
+            }
+            else
+            {
+                quoted += ch;
+            }
+        }
+        quoted += "\"";
+        return quoted;
+    }
+#else
     // Single-quote escapes a string for safe use in a shell command.
     // An embedded single quote must be terminated, escaped, then reopened.
     std::string quoteForShell(const std::string &value)
@@ -702,6 +785,7 @@ namespace
         quoted += "'";
         return quoted;
     }
+#endif
 
     std::vector<std::string> getAseFileIoCandidates() {
         std::vector<std::string> candidates;
@@ -737,9 +821,15 @@ namespace
     // same interpreter here so this subprocess can actually import ase.
     std::vector<std::string> getAsePythonCandidates() {
         std::vector<std::string> candidates;
+#if defined(_WIN32)
+        candidates.push_back("./haptic-device/uma_env/Scripts/python.exe");
+        candidates.push_back("../haptic-device/uma_env/Scripts/python.exe");
+        candidates.push_back("../../haptic-device/uma_env/Scripts/python.exe");
+#else
         candidates.push_back("./haptic-device/uma_env/bin/python3");
         candidates.push_back("../haptic-device/uma_env/bin/python3");
         candidates.push_back("../../haptic-device/uma_env/bin/python3");
+#endif
         return candidates;
     }
 
@@ -754,9 +844,14 @@ namespace
             }
         }
 
-        // Fall back to whatever python3 is on PATH so this still works in
-        // environments where ASE was installed system-wide instead.
+        // Fall back to whatever python is on PATH so this still works in
+        // environments where ASE was installed system-wide instead. Windows
+        // Python installs only provide a "python" command, not "python3".
+#if defined(_WIN32)
+        return "python";
+#else
         return "python3";
+#endif
     }
 
 }
