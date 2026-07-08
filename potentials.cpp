@@ -388,7 +388,7 @@ namespace
         } else if (spec.rfind("uma", 0) == 0) {
             // UMA is Meta's universal ML potential. Its constructor takes the full
             // spec string directly, so we pass it through as kwargs.
-            moduleName = "uma_wrapper";
+            moduleName = "calculator";
             className = "create_calculator";
             kwargsText = spec;
         } else {
@@ -396,7 +396,7 @@ namespace
             size_t firstColon = spec.find(':');
             if (firstColon == std::string::npos) {
                 std::cerr << "ASE calculator spec must be empty, a known alias "
-                            "(`lj`, `morse`, `emt`, `uma`), or `module:Class[:kwargs]`."
+                            "(`lj`, `morse`, `emt`, `uma`, `uma-remote`), or `module:Class[:kwargs]`."
                         << std::endl;
                 std::exit(1);
             }
@@ -434,15 +434,15 @@ namespace
         Py_DECREF(pathStr);
 
         // Load ASE and grab the Atoms class now so we don't repeat this on every frame.
-        aseModule = importModule("ase");
+        aseModule = importModule(spec == "uma-remote" ? "calculator" : "ase");
         atomsClass = getCallable(aseModule, "Atoms");
 
         PyObject *calcArgs = PyTuple_New(0);
         PyObject *calcKwargs = nullptr;
 
-        if (moduleName == "uma_wrapper" && className == "create_calculator") {
+        if (moduleName == "calculator" && className == "create_calculator") {
             // UMA's factory function handles its own construction from the spec string.
-            PyObject *wrapperModule = importModule("uma_wrapper");
+            PyObject *wrapperModule = importModule("calculator");
             PyObject *resolver = getCallable(wrapperModule, "create_calculator");
 
             PyObject *specObj = PyUnicode_FromString(kwargsText.c_str());

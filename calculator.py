@@ -8,21 +8,59 @@
 from importlib import import_module
 from ast import literal_eval
 
-from ase import Atoms
+import paramiko
+import pickle
+import numpy as np
+import struct
+import time
 
-from fairchem.core import pretrained_mlip, FAIRChemCalculator
+USERNAME = "wc5879"
+REMOTE_PYTHON = f"/home/{USERNAME}/uma_env/bin/python3"
+NUM_SHARDS = 1
 
+class Atoms:
+    def __init__(self, **kwargs):
+        self.num_atoms = len(kwargs["numbers"])
+        self.ssh = paramiko.SSHClient()
+        self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self.ssh.connect(hostname="saskatchewan.cm.utexas.edu", username=USERNAME)
+        sftp = self.ssh.open_sftp()
+        sftp.put("haptic-device/server.py", f"/home/{USERNAME}/.cache/server.py")
+        sftp.close()
+        self.stdin, self.stdout, self.stderr = self.ssh.exec_command(f"bash -l -c 'srun --gres=shard:{NUM_SHARDS} {REMOTE_PYTHON} -u /home/{USERNAME}/.cache/server.py'", get_pty=False)
+        print("Waiting for server to be ready...")
+        while True:
+            line = self.stdout.readline()
+            if "Ready to accept instructions" in line:
+                print("Server is ready")
+                break
+        data = pickle.dumps(kwargs)
+        self.stdin.write(struct.pack("!I", len(data)))
+        self.stdin.write(data)
+        self.stdin.flush()
+
+    def set_positions(self, positions):
+        self.stdin.write(np.array(positions, dtype=np.float32).tobytes())
+
+    def get_forces(self):
+        size = np.dtype(np.float32).itemsize * self.num_atoms * 3
+        data = self.stdout.read(size)
+        return np.frombuffer(data, dtype=np.float32).reshape((self.num_atoms, 3))
+
+    def get_potential_energy(self):
+        data = self.stdout.read(8 + 1)[:8]
+        return struct.unpack("d", data)[0]
 
 # Module-level cache of UMA predictors. Building a predictor loads a large model
 # into memory, so we keep one per (model, device) alive for the whole session
 # and hand the same instance back on every subsequent call.
 _uma_predictor_cache = {}
 
-
 # Returns the cached UMA predictor for the given model and device, building it
 # lazily on first use. "turbo" inference settings trade a little accuracy for
 # the speed the haptic loop needs.
 def _get_uma_predictor(model_name="uma-s-1p2", device="cuda"):
+    from fairchem.core import pretrained_mlip
     key = (model_name, device)
 
     if key not in _uma_predictor_cache:
@@ -34,12 +72,11 @@ def _get_uma_predictor(model_name="uma-s-1p2", device="cuda"):
 
     return _uma_predictor_cache[key]
 
-
 # Resolves a short spec string to a constructed ASE calculator. Accepts built-in
 # aliases for common potentials (lj, morse, emt, uma) or a generic
 # "module:Class[:kwargs]" format for anything else. Mirrors parseCalculatorSpec
 # on the C++ side.
-def _resolve_calculator(spec):
+def create_calculator(spec):
 
     # Lennard-Jones is the default when no spec is given. ASE's built-in pair
     # potential.
@@ -71,7 +108,8 @@ def _resolve_calculator(spec):
 
     # UMA is Meta's universal ML potential. The optional ":task" suffix selects
     # the prediction head (omol, omat, oc20, ...); omol is the default.
-    elif spec.startswith("uma"):
+    elif spec == "uma":
+        from fairchem.core import FAIRChemCalculator
 
         # Examples:
         # "uma"
@@ -96,6 +134,9 @@ def _resolve_calculator(spec):
             task_name=task_name
         )
 
+    elif spec == "uma-remote":
+        return None
+
     # Generic format: "module:ClassName" or "module:ClassName:{...kwargs...}".
     else:
         parts = spec.split(":", 2)
@@ -118,42 +159,3 @@ def _resolve_calculator(spec):
         calculator_class = getattr(import_module(module_name), class_name)
 
         return calculator_class(**kwargs)
-
-
-# Builds an ASE Atoms object from the given atomic numbers and positions,
-# attaches the resolved calculator, and returns the forces and total potential
-# energy. cell and pbc describe the simulation box and periodic boundary
-# conditions; both may be omitted for an isolated cluster.
-def get_values(numbers, positions, cell=None, pbc=None, calculator_spec=""):
-
-    atoms = Atoms(
-        numbers=numbers,
-        positions=positions,
-        cell=cell,
-        pbc=pbc
-    )
-
-    # Some ML calculators (including the UMA omol task) require charge and spin
-    # in the info dict.
-    atoms.info["charge"] = 0
-    atoms.info["spin"] = 1
-
-    atoms.calc = _resolve_calculator(calculator_spec)
-
-    return {
-        "forces": atoms.get_forces().tolist(),
-        "energy": atoms.get_potential_energy(),
-    }
-
-
-# Quick self-test: run a two-atom hydrogen calculation with the UMA potential
-# and print the resulting forces and energy.
-if __name__ == "__main__":
-
-    sample = get_values(
-        numbers=[1, 1],
-        positions=[[0, 0, 0], [1.0, 0, 0]],
-        calculator_spec="uma:omol"
-    )
-
-    print(sample)
