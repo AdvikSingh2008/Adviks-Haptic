@@ -6,9 +6,14 @@
 #include <fstream>
 #include <mutex>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 int just_unanchored = 0;
 bool transparentAtoms = false;
+static const double CLICK_SELECT_DRAG_THRESHOLD_PX = 5.0;
+static double leftMouseDownX = 0.0;
+static double leftMouseDownY = 0.0;
 
 // CHAI3D renders into the framebuffer, which is measured in pixels. GLFW cursor
 // coordinates are in window coordinates, so derive the conversion from the
@@ -28,6 +33,11 @@ static void scaleCursorToPixels(double &a_x, double &a_y) {
 
   a_x *= static_cast<double>(framebufferWidth) / static_cast<double>(windowWidth);
   a_y *= static_cast<double>(framebufferHeight) / static_cast<double>(windowHeight);
+}
+
+static void getCursorPosPixels(GLFWwindow *a_window, double &x, double &y) {
+  glfwGetCursorPos(a_window, &x, &y);
+  scaleCursorToPixels(x, y);
 }
 
 static void ensureSelectionBoxLines() {
@@ -80,6 +90,40 @@ static bool projectAtomToScreen(Atom *atom, double &screenX, double &screenY) {
   screenX = (toAtom.dot(camera->getRightVector()) / depth) * scale + 0.5 * width;
   screenY = (toAtom.dot(camera->getUpVector()) / depth) * scale + 0.5 * height;
   return true;
+}
+
+static Atom *findAtomAtScreenPosition(double screenX, double screenY) {
+  Atom *nearestAtom = NULL;
+  double nearestDistance = std::numeric_limits<double>::max();
+
+  for (Atom *atom : spheres) {
+    double atomScreenX = 0.0;
+    double atomScreenY = 0.0;
+    if (!projectAtomToScreen(atom, atomScreenX, atomScreenY)) {
+      continue;
+    }
+
+    cVector3d toAtom = atom->getLocalPos() - camera->getLocalPos();
+    double depth = toAtom.dot(camera->getLookVector());
+    double scale = (0.5 * height) / tan(0.5 * camera->getFieldViewAngleRad());
+    double projectedRadius = (atom->getRadius() / depth) * scale;
+    double hitRadius = std::max(12.0, projectedRadius * 1.75);
+    double dx = screenX - atomScreenX;
+    double dy = screenY - atomScreenY;
+    double distance = sqrt(dx * dx + dy * dy);
+    if (distance <= hitRadius && distance < nearestDistance) {
+      nearestAtom = atom;
+      nearestDistance = distance;
+    }
+  }
+
+  return nearestAtom;
+}
+
+static void selectOnlyAtom(Atom *selectedAtom) {
+  for (Atom *atom : spheres) {
+    atom->setSelected(atom == selectedAtom);
+  }
 }
 
 static void selectAtomsInBox() {
@@ -401,42 +445,21 @@ void mouseButtonCallback(GLFWwindow *a_window, int a_button, int a_action,
     cCollisionRecorder recorder;
     cCollisionSettings settings;
     if (a_button == GLFW_MOUSE_BUTTON_LEFT && a_action == GLFW_PRESS) {
-        glfwGetCursorPos(window, &x, &y);
-        scaleCursorToPixels(x, y); // window points -> framebuffer pixels
-        bool hit =
-        camera->selectWorld(x, (height - y), width, height, recorder, settings);
-        if (hit) {
-            cGenericObject *selected = recorder.m_nearestCollision.m_object;
-            selectedAtom = (Atom *)selected;
-            if (a_mods & GLFW_MOD_SHIFT) {
-                selectedAtom->setSelected(true);
-                mouseState = MOUSE_IDLE;
-                return;
-            }
-            selectedPoint = recorder.m_nearestCollision.m_globalPos;
-            selectedAtomOffset =
-            recorder.m_nearestCollision.m_globalPos - selectedAtom->getLocalPos();
-            mouseState = MOUSE_SELECTION;
-        } else {
-            selectedAtom = NULL;
-            selectionStartX = x;
-            selectionStartY = height - y;
-            selectionCurrentX = selectionStartX;
-            selectionCurrentY = selectionStartY;
-            updateSelectionBoxLines();
-            setSelectionBoxVisible(true);
-            mouseState = MOUSE_BOX_SELECTION;
-        }
+        getCursorPosPixels(a_window, x, y);
+        selectedAtom = findAtomAtScreenPosition(x, height - y);
+        leftMouseDownX = x;
+        leftMouseDownY = height - y;
+        selectionStartX = leftMouseDownX;
+        selectionStartY = leftMouseDownY;
+        selectionCurrentX = selectionStartX;
+        selectionCurrentY = selectionStartY;
+        updateSelectionBoxLines();
+        setSelectionBoxVisible(true);
+        mouseState = MOUSE_BOX_SELECTION;
     } else if (a_button == GLFW_MOUSE_BUTTON_RIGHT && a_action == GLFW_PRESS) {
-        glfwGetCursorPos(window, &x, &y);
-        scaleCursorToPixels(x, y); // window points -> framebuffer pixels
-        bool hit =
-        camera->selectWorld(x, (height - y), width, height, recorder, settings);
-        if (hit) {
-            // retrieve Atom selected by mouse
-            cGenericObject *selected = recorder.m_nearestCollision.m_object;
-            selectedAtom = (Atom *)selected;
-
+        getCursorPosPixels(a_window, x, y);
+        selectedAtom = findAtomAtScreenPosition(x, height - y);
+        if (selectedAtom != NULL) {
             // Toggle anchor status and color
             if (selectedAtom->isAnchor()) {
                 selectedAtom->setAnchor(false);
@@ -447,11 +470,22 @@ void mouseButtonCallback(GLFWwindow *a_window, int a_button, int a_action,
         }
     } else if (a_button == GLFW_MOUSE_BUTTON_LEFT && a_action == GLFW_RELEASE &&
                mouseState == MOUSE_BOX_SELECTION) {
-        glfwGetCursorPos(window, &x, &y);
-        scaleCursorToPixels(x, y);
+        getCursorPosPixels(a_window, x, y);
         selectionCurrentX = x;
         selectionCurrentY = height - y;
-        selectAtomsInBox();
+        double dx = selectionCurrentX - leftMouseDownX;
+        double dy = selectionCurrentY - leftMouseDownY;
+        bool isClick = sqrt(dx * dx + dy * dy) <= CLICK_SELECT_DRAG_THRESHOLD_PX;
+        Atom *clickedAtom = findAtomAtScreenPosition(selectionCurrentX, selectionCurrentY);
+        if (isClick && clickedAtom != NULL) {
+            if (a_mods & GLFW_MOD_SHIFT) {
+                clickedAtom->setSelected(true);
+            } else {
+                selectOnlyAtom(clickedAtom);
+            }
+        } else if (!isClick) {
+            selectAtomsInBox();
+        }
         setSelectionBoxVisible(false);
         mouseState = MOUSE_IDLE;
     } else {
