@@ -373,6 +373,7 @@ Atom::Atom(double radius, int atomicNumber, cColorf color)
     anchor = false;
     current = false;
     repeating = false;
+    selected = false;
     velVector = new cShapeLine(cVector3d(0, 0, 0), cVector3d(0, 0, 0));
     force.zero();
     this->atomicNumber = atomicNumber;
@@ -381,13 +382,14 @@ Atom::Atom(double radius, int atomicNumber, cColorf color)
     base_color = color;
     
     // set the color
-    m_material->setColor(color);
+    refreshMaterial();
 }
 
 Atom::Atom(double radius, int atomicNumber) : cShapeSphere(radius) {
     anchor = false;
     current = false;
     repeating = false;
+    selected = false;
     velVector = new cShapeLine(cVector3d(0, 0, 0), cVector3d(0, 0, 0));
     force.zero();
     this->atomicNumber = atomicNumber;
@@ -398,52 +400,60 @@ Atom::Atom(double radius, int atomicNumber) : cShapeSphere(radius) {
 
     base_color = cColorf();
     base_color.set(get<0>(col)/255, get<1>(col)/255, get<2>(col)/255);
-    m_material->setColor(base_color);
+    refreshMaterial();
 }
 
+void Atom::refreshMaterial() {
+    m_material->m_emission.set(0.0f, 0.0f, 0.0f, 1.0f);
+    if (selected) {
+        m_material->setYellowGold();
+        m_material->m_emission.set(1.0f, 0.85f, 0.0f, 1.0f);
+    } else if (current) {
+        m_material->setRed();
+    } else if (anchor) {
+        m_material->setBlue();
+    } else if (repeating) {
+        m_material->setBlack();
+    } else {
+        m_material->setColor(base_color);
+    }
+}
 
 bool Atom::isAnchor() { return anchor; }
 
 void Atom::setAnchor(bool newAnchor) {
     if (newAnchor) {
-        // setting atom to be an anchor, so change color to blue
-        m_material->setBlue();
         current = false;
-    } else {
-        // removing atom as anchor, so change color to white
-        m_material->setColor(base_color);
     }
     anchor = newAnchor;
+    refreshMaterial();
 }
 
 bool Atom::isCurrent() { return current; }
 
 void Atom::setCurrent(bool newCurrent) {
     if (newCurrent) {
-        // setting atom to be current, so change color to red
-        m_material->setRed();
         anchor = false;  // cannot be both anchor and current
-    } else if (anchor) {
-        m_material->setBlue();
-    } else {
-        // toggling current off, so set to white
-        m_material->setColor(base_color);
     }
     current = newCurrent;
+    refreshMaterial();
 }
 
 bool Atom::isRepeating() { return repeating; }
 
 void Atom::setRepeating(bool newRepeat) {
     if (newRepeat) {
-        // setting atom to be repeating, changing color to black
-        m_material->setBlack();
         anchor = false;
-    } else {
-        // toggling off, so set to white
-        m_material->setColor(base_color);
     }
     repeating = newRepeat;
+    refreshMaterial();
+}
+
+bool Atom::isSelected() { return selected; }
+
+void Atom::setSelected(bool newSelected) {
+    selected = newSelected;
+    refreshMaterial();
 }
 
 cVector3d Atom::getVelocity() { return velocity; }
@@ -491,7 +501,12 @@ void Atom::setInitialPosition(double spawn_dist) {
                 r * cos(theta));
 }
 
-void Atom::setColor(cColorf color) { m_material->setColor(color); }
+void Atom::setColor(cColorf color) {
+    if (!selected) {
+        m_material->setColor(color);
+        m_material->m_emission.set(0.0f, 0.0f, 0.0f, 1.0f);
+    }
+}
 
 int Atom::getAtomicNumber() const { return atomicNumber; }
 
