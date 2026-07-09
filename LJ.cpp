@@ -140,6 +140,7 @@ const double K_RETURN_SPRING = 25.0;
 const double K_RETURN_DAMPER = 2.0;    // Damping for standby return
 const double K_POSITION_ATTRACTION = 25.0;
 const double K_POSITION_DAMPER = 2.0;  // Damping for position mode
+const double MAX_HAPTIC_ATOM_FORCE = 1.6;
 
 // Hard safety ceiling on the force actually sent to the physical device, in
 // the same force units as MAX_FORCE/ATTRACTION_MAX below. Applied AFTER the
@@ -2080,6 +2081,26 @@ vector<int> getHapticInfluencedAtomIndices() {
   return influenced;
 }
 
+map<int, cVector3d> hapticInfluenceOffsets;
+vector<int> activeHapticInfluence;
+
+void ensureHapticInfluenceOffsets(const vector<int> &indices,
+                                  const cVector3d &position) {
+  if (indices == activeHapticInfluence) {
+    return;
+  }
+
+  activeHapticInfluence = indices;
+  hapticInfluenceOffsets.clear();
+  for (int index : indices) {
+    if (spheres[index]->isSelected()) {
+      hapticInfluenceOffsets[index] = spheres[index]->getLocalPos() - position;
+    } else {
+      hapticInfluenceOffsets[index] = cVector3d(0, 0, 0);
+    }
+  }
+}
+
 cVector3d getAverageAtomGroupForce(const vector<int> &indices) {
   cVector3d force(0, 0, 0);
   if (indices.empty()) {
@@ -2092,21 +2113,30 @@ cVector3d getAverageAtomGroupForce(const vector<int> &indices) {
 }
 
 cVector3d addHapticForceToAtoms(const vector<int> &indices,
-                                const cVector3d &position) {
+                                const cVector3d &position,
+                                const double timeInterval) {
   if (indices.empty()) {
     return cVector3d(0, 0, 0);
   }
 
-  cVector3d externalForce = position * K_HAPTIC_SPRING;
+  ensureHapticInfluenceOffsets(indices, position);
   cVector3d averageForceBeforeHaptic = getAverageAtomGroupForce(indices);
   for (int index : indices) {
     Atom *atom = spheres[index];
     if (!atom->isAnchor()) {
-      atom->setForce(atom->getForce() + externalForce);
+      cVector3d targetPosition = position + hapticInfluenceOffsets[index];
+      cVector3d currentPosition = atom->getLocalPos();
+      cVector3d previousPosition = prevPositions[index];
+      cVector3d velocity = (currentPosition - previousPosition) / timeInterval;
+      cVector3d externalForce =
+          (targetPosition - currentPosition) * K_HAPTIC_SPRING -
+          velocity * K_HAPTIC_DAMPER;
+      atom->setForce(atom->getForce() +
+                     clampVectorMagnitude(externalForce, MAX_HAPTIC_ATOM_FORCE));
     }
   }
 
-  return averageForceBeforeHaptic - externalForce;
+  return averageForceBeforeHaptic;
 }
 
 vector<int> activeHapticSelection;
@@ -2267,7 +2297,7 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
       atom->setForce(force);
     }
     if (hasHapticDevice && useHapticInfluence) {
-      hapticForce = addHapticForceToAtoms(hapticInfluencedIndices, position);
+      hapticForce = addHapticForceToAtoms(hapticInfluencedIndices, position, timeInterval);
     }
     for (int i = 0; i < spheres.size(); i++) {
       Atom *atom = spheres[i];
