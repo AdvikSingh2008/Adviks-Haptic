@@ -14,7 +14,9 @@ import numpy as np
 import struct
 import time
 
-USERNAME = "wc5879"
+import threading
+
+USERNAME = "sc73369"
 REMOTE_PYTHON = f"/home/{USERNAME}/uma_env/bin/python3"
 NUM_SHARDS = 1
 
@@ -25,19 +27,36 @@ class Atoms:
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         self.ssh.connect(hostname="saskatchewan.cm.utexas.edu", username=USERNAME)
         sftp = self.ssh.open_sftp()
-        sftp.put("haptic-device/server.py", f"/home/{USERNAME}/.cache/server.py")
+        sftp.put("../haptic-device/server.py", f"/home/{USERNAME}/.cache/server.py")
         sftp.close()
         self.stdin, self.stdout, self.stderr = self.ssh.exec_command(f"bash -l -c 'srun --gres=shard:{NUM_SHARDS} {REMOTE_PYTHON} -u /home/{USERNAME}/.cache/server.py'", get_pty=False)
+        
+        
         print("Waiting for server to be ready...")
         while True:
             line = self.stdout.readline()
+            if line == "":  # EOF — server exited before signaling ready
+                err = self.stderr.read().decode(errors="replace")
+                raise RuntimeError(
+                    "server.py exited before becoming ready:\n" + err
+                )
+            print(line.strip())
             if "Ready to accept instructions" in line:
                 print("Server is ready")
                 break
+
+        # only now start the background drain, for the steady-state request loop
+        threading.Thread(target=self._drain, args=(self.stderr, "server"), daemon=True).start()
         data = pickle.dumps(kwargs)
         self.stdin.write(struct.pack("!I", len(data)))
         self.stdin.write(data)
         self.stdin.flush()
+
+    def _drain(self, stream, prefix):
+        for line in iter(stream.readline, ""):
+            if not line:
+                break
+            print(f"[{prefix}] {line}", end="")
 
     def set_positions(self, positions):
         self.stdin.write(np.array(positions, dtype=np.float32).tobytes())
@@ -119,7 +138,7 @@ def create_calculator(spec):
 
         parts = spec.split(":")
 
-        task_name = "oc20"
+        task_name = "odac"
 
         if len(parts) > 1:
             task_name = parts[1]

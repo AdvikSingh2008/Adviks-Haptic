@@ -1435,7 +1435,7 @@ void runGraphicsLoop() {
     glfwPollEvents(); // process events
     freqCounterGraphics.signal(1); // signal frequency counter
     frequencies.push_back(freqCounterHaptics.getFrequency());
-    cout << getMean(frequencies) << endl;
+    // cout << getMean(frequencies) << endl;
     // cout << freqCounterHaptics.getFrequency() << endl;
   }
 }
@@ -2048,7 +2048,7 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
       return cVector3d(0.0, 0.0, 0.0);
     }
     const double currentTemp = getCurrentTemp();
-    calculatorPtr->setTemperature(currentTemp);
+    // calculatorPtr->setTemperature(currentTemp);
     vector<vector<double>> forcesVec = calculatorPtr->getFandU(spheres);
     double potentialEnergy = forcesVec[spheres.size()][0];
     if (std::isfinite(potentialEnergy)) {
@@ -2153,8 +2153,8 @@ void updateHaptics(void) {
     // time step the simulation runs at in seconds - shorter timesteps are more accurate, but result in slower frames
     // .001 is a good default for uma simulations; changeable at launch via
     // HAPTIC_DEVICE_TIME_STEP and live via the IPC "set timestep" command
-    const double DT = simulationTimeStep.load();
-    cVector3d force = stepSimulation(position, DT, true);
+    // const double DT = simulationTimeStep.load();
+    cVector3d force = stepSimulation(position, 0.01, true);
 
     /////////////////////////////////////////////////////////////////////////
     // APPLY FORCES
