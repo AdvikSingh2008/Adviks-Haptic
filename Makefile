@@ -90,3 +90,4 @@ $(OBJ_DIR)/%.o : $(SRC_DIR)/%.cpp
 clean:
 	rm -f $(TARGET) $(OBJECTS) *~ TAGS core *.bak #*#
 	-rmdir $(OBJ_DIR)
+PYTHON_CONFIG=python3.11-config

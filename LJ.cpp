@@ -161,37 +161,8 @@ const double BOND_DISTANCE_THRESHOLD = SPHERE_RADIUS * 5.0;
 const double ATOM_MOVE_STEP = SPHERE_RADIUS;
 
 // boundary conditions
-const double BOUNDARY_LIMIT = .5;
-const cVector3d northPlanePos = cVector3d(0, BOUNDARY_LIMIT, 0);
-const cVector3d northPlaneP1 = cVector3d(1, BOUNDARY_LIMIT, 0);
-const cVector3d northPlaneP2 = cVector3d(1, BOUNDARY_LIMIT, 1);
-const cVector3d northPlaneNorm =
-    cComputeSurfaceNormal(northPlanePos, northPlaneP1, northPlaneP2);
-const cVector3d southPlanePos = cVector3d(0, -BOUNDARY_LIMIT, 0);
-const cVector3d southPlaneP1 = cVector3d(1, -BOUNDARY_LIMIT, 0);
-const cVector3d southPlaneP2 = cVector3d(1, -BOUNDARY_LIMIT, 1);
-const cVector3d southPlaneNorm =
-    cComputeSurfaceNormal(southPlanePos, southPlaneP1, southPlaneP2);
-const cVector3d eastPlanePos = cVector3d(BOUNDARY_LIMIT, 0, 0);
-const cVector3d eastPlaneP1 = cVector3d(BOUNDARY_LIMIT, 1, 0);
-const cVector3d eastPlaneP2 = cVector3d(BOUNDARY_LIMIT, 1, 1);
-const cVector3d eastPlaneNorm =
-    cComputeSurfaceNormal(eastPlanePos, eastPlaneP1, eastPlaneP2);
-const cVector3d westPlanePos = cVector3d(-BOUNDARY_LIMIT, 0, 0);
-const cVector3d westPlaneP1 = cVector3d(-BOUNDARY_LIMIT, 1, 0);
-const cVector3d westPlaneP2 = cVector3d(-BOUNDARY_LIMIT, 1, 1);
-const cVector3d westPlaneNorm =
-    cComputeSurfaceNormal(westPlanePos, westPlaneP1, westPlaneP2);
-const cVector3d forwardPlanePos = cVector3d(0, 0, BOUNDARY_LIMIT);
-const cVector3d forwardPlaneP1 = cVector3d(0, 1, BOUNDARY_LIMIT);
-const cVector3d forwardPlaneP2 = cVector3d(1, 1, BOUNDARY_LIMIT);
-const cVector3d forwardPlaneNorm =
-    cComputeSurfaceNormal(forwardPlanePos, forwardPlaneP1, forwardPlaneP2);
-const cVector3d backPlanePos = cVector3d(0, 0, -BOUNDARY_LIMIT);
-const cVector3d backPlaneP1 = cVector3d(0, 1, -BOUNDARY_LIMIT);
-const cVector3d backPlaneP2 = cVector3d(1, 1, -BOUNDARY_LIMIT);
-const cVector3d backPlaneNorm =
-    cComputeSurfaceNormal(backPlanePos, backPlaneP1, backPlaneP2);
+const double BOUNDARY_LIMIT = .01;
+const double CAMERA_BOUNDARY_SCALE = 0.35;
 
 //------------------------------------------------------------------------------
 // DECLARED VARIABLES
@@ -625,8 +596,6 @@ int runApplication(int argc, char *argv[]) {
   }
   startIpcServer(ipcPort);
 
-
-  initializeHelpPanel();
   initializeSliderUI();
   
 
@@ -828,10 +797,21 @@ void initializeHapticDevice() {
 }
 
 
-void placeAtomsAse(std::array<double, 9>& aseCell, std::array<int, 3>& asePbc, cTexture2dPtr texture, char *argv[]) {
+void placeAtomsAse(std::array<double, 9>& aseCell, std::array<int, 3>& asePbc, cTexture2dPtr texture, int argc, char *argv[]) {
   AseStructureData structure;
+  // Optional repeat factors: argv[6]=x, argv[7]=y, argv[8]=z. Each defaults to
+  // 1 if not given, and values < 1 are ignored (they would zero out the cell).
+  std::array<int, 3> repeat = {1, 1, 1};
+  for (int i = 0; i < 3; i++) {
+    if (argc > 6 + i) {
+      int value = atoi(argv[6 + i]);
+      if (value > 0) {
+        repeat[i] = value;
+      }
+    }
+  }
   try {
-    structure = loadAseStructure(argv[2]);
+    structure = loadAseStructure(argv[2], repeat);
   } catch (const std::exception &ex) {
     close();
     throw std::runtime_error(ex.what());
@@ -873,34 +853,6 @@ void placeAtomsAse(std::array<double, 9>& aseCell, std::array<int, 3>& asePbc, c
   }
 }
 
-static double parseShellRadiusAngstroms(int argc, char *argv[]) {
-  const double defaultRadiusAngstroms = 5.0;
-  if (argc <= 4) {
-    return defaultRadiusAngstroms;
-  }
-
-  string potential = argv[3];
-  for (char &c : potential) {
-    c = tolower(c);
-  }
-
-  int radiusIndex = (potential == "ase" || potential == "a") ? 5 : 4;
-  if (argc <= radiusIndex) {
-    return defaultRadiusAngstroms;
-  }
-
-  char *end = NULL;
-  double radiusAngstroms = strtod(argv[radiusIndex], &end);
-  if (end == argv[radiusIndex] || radiusAngstroms <= 0.0) {
-    cerr << "Warning: invalid shell radius '" << argv[radiusIndex]
-         << "'. Defaulting to " << defaultRadiusAngstroms << " angstroms." << endl;
-    return defaultRadiusAngstroms;
-  }
-
-  return radiusAngstroms;
-}
-
-
 void placeAtoms(std::array<double, 9>& aseCell, std::array<int, 3>& asePbc, int argc, char *argv[]) {
   cTexture2dPtr texture = cTexture2d::create(); // create texture
   // load texture file
@@ -920,7 +872,9 @@ void placeAtoms(std::array<double, 9>& aseCell, std::array<int, 3>& asePbc, int 
       k = 0;
     }
     int numSpheres = k + 1;
-    double shellRadiusAngstroms = parseShellRadiusAngstroms(argc, argv);
+    // argv[4]/argv[5] are always the ASE spec and PBC mode (see main()), never
+    // a radius, so there is no CLI slot to override this default.
+    const double shellRadiusAngstroms = 5.0;
     vector<cVector3d> positions = generateShellPositions(k, shellRadiusAngstroms);
     for (int i = 0; i < numSpheres; i++) {
       // initialize atom with texture and atomic number of 1 (hydrogen)
@@ -932,7 +886,7 @@ void placeAtoms(std::array<double, 9>& aseCell, std::array<int, 3>& asePbc, int 
       }
     }
   } else // read in specified file
-    placeAtomsAse(aseCell, asePbc, texture, argv);
+    placeAtomsAse(aseCell, asePbc, texture, argc, argv);
 
   // Done reading any sort of info.
   for (int i = 0; i < spheres.size(); i++) {
@@ -1437,16 +1391,16 @@ double getMean(vector<int> v) {
 vector<int> frequencies;
 void runGraphicsLoop() {
   framebufferSizeCallback(window, width, height); // initialize framebuffer size
-  cPrecisionClock keyboardModeClock;
-  keyboardModeClock.reset();
-  keyboardModeClock.start();
   // main graphic loop
   while (!glfwWindowShouldClose(window)) {
     glfwGetFramebufferSize(window, &width, &height); // framebuffer size in pixels (HiDPI-aware)
     if (!hapticDevice) {
-      keyboardModeClock.stop();
-      double timeInterval = cMin(simulationTimeStep.load(), keyboardModeClock.getCurrentTimeSeconds());
-      keyboardModeClock.start(true);
+      // Advance the sim by the slider-controlled fixed timestep. This used to be
+      // min()'d with the real inter-frame time, which capped the timestep at the
+      // frame duration on fast machines - so most of the Time Step slider's range
+      // produced no visible change. Using the fixed value directly makes the whole
+      // slider range (including the new slower minimum) actually take effect.
+      double timeInterval = simulationTimeStep.load();
       freqCounterHaptics.signal(1);
       initializeprevPositions();
       stepSimulation(cVector3d(0.0, 0.0, 0.0), timeInterval, false);
@@ -1457,7 +1411,7 @@ void runGraphicsLoop() {
     glfwPollEvents(); // process events
     freqCounterGraphics.signal(1); // signal frequency counter
     frequencies.push_back(freqCounterHaptics.getFrequency());
-    cout << getMean(frequencies) << endl;
+    // cout << getMean(frequencies) << endl;
     // cout << freqCounterHaptics.getFrequency() << endl;
   }
 }
@@ -1536,26 +1490,33 @@ void updateLabels() {
   // window). Row spacing shrinks if needed so every hotkey stays on-screen
   // instead of being pushed below y=0 and disappearing on shorter windows.
   const double topMargin = 10.0;
-  const double headerReserve = 60.0;
+  const double headerReserve = 60.0;   // vertical space reserved for the header
+  const double bottomMargin = 20.0;    // keep the last row off the panel's edge
   const double maxHelpPanelHeight = 500.0;
   const double defaultRowSpacing = 25.0;
 
+  // Size and place the panel first. Its height is capped at maxHelpPanelHeight,
+  // so the rows must be laid out against the PANEL height, not the raw window
+  // height, or the bottom rows spill out below the panel on tall windows.
+  double helpPanelHeight = cMin(maxHelpPanelHeight, cMax(0.0, (double)height - topMargin));
+  helpPanel->setSize(520, helpPanelHeight);
+  double panelTop = height - topMargin;
+  helpPanel->setLocalPos(width - 550, panelTop - helpPanelHeight);
+  helpHeader->setLocalPos(width - 490, panelTop - headerReserve + 20);
+
+  // Shrink row spacing if the rows would not otherwise fit inside the panel
+  // (between the header at the top and a small margin above the bottom edge).
   int numHotkeyRows = static_cast<int>(hotkeyKeys.size());
   double rowSpacing = defaultRowSpacing;
   if (numHotkeyRows > 1) {
-    double availableRowSpace = height - topMargin - headerReserve;
+    double availableRowSpace = helpPanelHeight - headerReserve - bottomMargin;
     double neededRowSpace = defaultRowSpacing * (numHotkeyRows - 1);
     if (availableRowSpace > 0 && availableRowSpace < neededRowSpace) {
       rowSpacing = availableRowSpace / (numHotkeyRows - 1);
     }
   }
 
-  double helpPanelHeight = cMin(maxHelpPanelHeight, cMax(0.0, (double)height - topMargin));
-  helpPanel->setSize(520, helpPanelHeight);
-  helpPanel->setLocalPos(width - 550, height - topMargin - helpPanelHeight);
-  helpHeader->setLocalPos(width - 490, height - topMargin - headerReserve + 20);
-
-  double rowStartY = height - topMargin - headerReserve;
+  double rowStartY = panelTop - headerReserve;
   for (int i = 0; i < hotkeyKeys.size(); i++) {
     cLabel *tempKeyLabel = hotkeyKeys[i];
     cLabel *tempFuncLabel = hotkeyFunctions[i];
@@ -1809,47 +1770,102 @@ void readButtons(bool buttons[4], bool buttonReset[4]) {
 
 
 
-void applyBoundaryConditions(cVector3d &x_curr) {
-  applyDavidBoundaryConditions(x_curr, x_curr);
-  applySeanBoundaryConditions(
-      x_curr, x_curr, x_curr,
+double getDynamicBoundaryLimit() {
+  if (!camera || width <= 0 || height <= 0) {
+    return BOUNDARY_LIMIT;
+  }
+
+  const double aspect = static_cast<double>(width) / static_cast<double>(height);
+  const double zoomDistance = camera->getSphericalRadius();
+  const double safeDistance = (zoomDistance > 1e-6) ? zoomDistance : 0.1;
+  const double halfHeight = safeDistance * tan(camera->getFieldViewAngleRad() * 0.5) * CAMERA_BOUNDARY_SCALE;
+  const double halfWidth = halfHeight * aspect;
+  return (halfWidth > halfHeight) ? halfWidth : halfHeight;
+}
+
+void getCameraAlignedBoundaryPlanes(cVector3d &northPlanePos,
+                                   cVector3d &northPlaneNorm,
+                                   cVector3d &southPlanePos,
+                                   cVector3d &southPlaneNorm,
+                                   cVector3d &eastPlanePos,
+                                   cVector3d &eastPlaneNorm,
+                                   cVector3d &westPlanePos,
+                                   cVector3d &westPlaneNorm,
+                                   cVector3d &forwardPlanePos,
+                                   cVector3d &forwardPlaneNorm,
+                                   cVector3d &backPlanePos,
+                                   cVector3d &backPlaneNorm,
+                                   double &boundaryLimit) {
+  boundaryLimit = getDynamicBoundaryLimit();
+
+  const cVector3d focusPoint(0.0, 0.0, 0.0);
+  if (!camera) {
+    northPlanePos = cVector3d(0, boundaryLimit, 0);
+    northPlaneNorm = cVector3d(0, 1, 0);
+    southPlanePos = cVector3d(0, -boundaryLimit, 0);
+    southPlaneNorm = cVector3d(0, -1, 0);
+    eastPlanePos = cVector3d(boundaryLimit, 0, 0);
+    eastPlaneNorm = cVector3d(1, 0, 0);
+    westPlanePos = cVector3d(-boundaryLimit, 0, 0);
+    westPlaneNorm = cVector3d(-1, 0, 0);
+    forwardPlanePos = cVector3d(0, 0, boundaryLimit);
+    forwardPlaneNorm = cVector3d(0, 0, 1);
+    backPlanePos = cVector3d(0, 0, -boundaryLimit);
+    backPlaneNorm = cVector3d(0, 0, -1);
+    return;
+  }
+
+  const cVector3d camRight = camera->getRightVector();
+  const cVector3d camUp = camera->getUpVector();
+  const cVector3d camLook = camera->getLookVector();
+
+  northPlanePos = focusPoint + camUp * boundaryLimit;
+  northPlaneNorm = camUp;
+  southPlanePos = focusPoint - camUp * boundaryLimit;
+  southPlaneNorm = -camUp;
+  eastPlanePos = focusPoint + camRight * boundaryLimit;
+  eastPlaneNorm = camRight;
+  westPlanePos = focusPoint - camRight * boundaryLimit;
+  westPlaneNorm = -camRight;
+  forwardPlanePos = focusPoint + camLook * boundaryLimit;
+  forwardPlaneNorm = camLook;
+  backPlanePos = focusPoint - camLook * boundaryLimit;
+  backPlaneNorm = -camLook;
+}
+
+void applyBoundaryConditions(cVector3d &oldPosition, cVector3d &newPosition) {
+  cVector3d northPlanePos;
+  cVector3d northPlaneNorm;
+  cVector3d southPlanePos;
+  cVector3d southPlaneNorm;
+  cVector3d eastPlanePos;
+  cVector3d eastPlaneNorm;
+  cVector3d westPlanePos;
+  cVector3d westPlaneNorm;
+  cVector3d forwardPlanePos;
+  cVector3d forwardPlaneNorm;
+  cVector3d backPlanePos;
+  cVector3d backPlaneNorm;
+  double boundaryLimit = 0.0;
+
+  getCameraAlignedBoundaryPlanes(
       northPlanePos, northPlaneNorm,
       southPlanePos, southPlaneNorm,
       eastPlanePos, eastPlaneNorm,
       westPlanePos, westPlaneNorm,
       forwardPlanePos, forwardPlaneNorm,
       backPlanePos, backPlaneNorm,
-      BOUNDARY_LIMIT);
-}
+      boundaryLimit);
 
-cColorf getTemperatureColor(double temperature) {
-  cColorf color;
-  
-  // Clamp temperature for gradient range
-  double tempClamped = temperature;
-  if (tempClamped < -5.0) tempClamped = -5.0;
-  if (tempClamped > 5.0) tempClamped = 5.0;
-  
-  // Map -5 to 5 range into 0 to 1 gradient factor
-  double gradientFactor = (tempClamped + 5.0) / 10.0;  // 0 at -5°K, 0.5 at 0°K, 1 at 5°K
-  
-  // Vibrant green at -5/0: (0.1, 0.9, 0.1)
-  // Vibrant purple at 5: (0.85, 0.1, 0.85)
-  double greenR = 0.1;
-  double greenG = 0.9;
-  double greenB = 0.1;
-  
-  double purpleR = 0.85;
-  double purpleG = 0.1;
-  double purpleB = 0.85;
-  
-  // Smooth linear interpolation from green through cyan to purple
-  double r = greenR + (purpleR - greenR) * gradientFactor;
-  double g = greenG + (purpleG - greenG) * gradientFactor;
-  double b = greenB + (purpleB - greenB) * gradientFactor;
-  
-  color.set(r, g, b);
-  return color;
+  applySeanBoundaryConditions(
+      oldPosition, newPosition, newPosition,
+      northPlanePos, northPlaneNorm,
+      southPlanePos, southPlaneNorm,
+      eastPlanePos, eastPlaneNorm,
+      westPlanePos, westPlaneNorm,
+      forwardPlanePos, forwardPlaneNorm,
+      backPlanePos, backPlaneNorm,
+      boundaryLimit);
 }
 
 cVector3d getNewAtomPosition(Atom *atom, cVector3d &prev_position, const double timeInterval) {
@@ -2180,7 +2196,7 @@ cVector3d forceModeUpdateSelectedGroup(const vector<int> &selectedIndices,
 
     atom->setForce(atom->getForce() + hapticForce);
     cVector3d newPosition = getNewAtomPosition(atom, previousPosition, timeInterval);
-    applyBoundaryConditions(newPosition);
+    applyBoundaryConditions(currentPosition, newPosition);
     atom->setLocalPos(newPosition);
     prevPositions[index] = currentPosition;
   }
@@ -2202,7 +2218,7 @@ cVector3d positionModeUpdateSelectedGroup(const vector<int> &selectedIndices,
     cVector3d attraction = (targetPosition - oldPosition) * timeInterval * VELOCITY_MULT;
     cVector3d newPosition = oldPosition +
         clampVectorMagnitude(attraction, ATTRACTION_MAX * timeInterval);
-    applyBoundaryConditions(newPosition);
+    applyBoundaryConditions(oldPosition, newPosition);
     atom->setLocalPos(newPosition);
     prevPositions[index] = oldPosition;
   }
@@ -2224,7 +2240,7 @@ cVector3d standbyModeUpdateSelectedGroup(const vector<int> &selectedIndices,
     Atom *atom = spheres[index];
     cVector3d oldPosition = atom->getLocalPos();
     cVector3d newPosition = oldPosition + dPHaptic;
-    applyBoundaryConditions(newPosition);
+    applyBoundaryConditions(oldPosition, newPosition);
     atom->setLocalPos(newPosition);
     prevPositions[index] = oldPosition;
   }
@@ -2277,7 +2293,7 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
       return cVector3d(0.0, 0.0, 0.0);
     }
     const double currentTemp = getCurrentTemp();
-    calculatorPtr->setTemperature(currentTemp);
+    // calculatorPtr->setTemperature(currentTemp);
     vector<vector<double>> forcesVec = calculatorPtr->getFandU(spheres);
     double potentialEnergy = forcesVec[spheres.size()][0];
     if (std::isfinite(potentialEnergy)) {
@@ -2287,9 +2303,6 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
 
     for (int i = 0; i < spheres.size(); i++) {
       Atom *atom = spheres[i];
-      if (!atom->isCurrent() && !atom->isAnchor()) {
-       atom->setColor(getTemperatureColor(currentTemp));
-      }
       cVector3d force(forcesVec[i][0], forcesVec[i][1], forcesVec[i][2]);
       if (!isFiniteVector(force)) {
         force.zero();
@@ -2302,12 +2315,12 @@ cVector3d stepSimulation(const cVector3d &requestedPosition, const double timeIn
     for (int i = 0; i < spheres.size(); i++) {
       Atom *atom = spheres[i];
       if (!atom->isAnchor()) {
-        cVector3d x_curr = atom->getLocalPos();
+        cVector3d old_position = atom->getLocalPos();
         cVector3d new_position = getNewAtomPosition(atom, prevPositions[i], timeInterval);
-        prevPositions[i] = x_curr;
-        applyBoundaryConditions(new_position);
+        prevPositions[i] = old_position;
+        applyBoundaryConditions(old_position, new_position);
         atom->setLocalPos(new_position);
-        cVector3d v = (new_position - prevPositions[i]) / timeInterval;
+        cVector3d v = (new_position - old_position) / timeInterval;
         atom->setVelocity(v);
       }
     }
@@ -2374,11 +2387,11 @@ void updateHaptics(void) {
     
     readButtons(buttons, buttonReset);
 
-    // time step the simulation runs at in seconds - shorter timesteps are more accurate, but result in slower frames
-    // .001 is a good default for uma simulations; changeable at launch via
-    // HAPTIC_DEVICE_TIME_STEP and live via the IPC "set timestep" command
-    const double DT = simulationTimeStep.load();
-    cVector3d force = stepSimulation(position, DT, true);
+    // time step the simulation runs at in seconds - shorter timesteps are more
+    // accurate but advance the sim more slowly. Driven by the Time Step slider
+    // (and HAPTIC_DEVICE_TIME_STEP / the IPC "set timestep" command) so the
+    // slider takes effect in haptic mode too, instead of a hardcoded value.
+    cVector3d force = stepSimulation(position, simulationTimeStep.load(), true);
 
     /////////////////////////////////////////////////////////////////////////
     // APPLY FORCES
@@ -2468,7 +2481,7 @@ vector<string> sliderOrder = {"time_step", "temperature"};
 // SLIDER UI STEP 1B: Add each new slider's configuration here.
 // sliderConfigs[id] = {display name, min, max, default, units, display scale, display digits}
 unordered_map<string, SliderConfig> sliderConfigs = {
-  {"time_step", {"Time Step", 0.0001, 0.0020, 0.0010, "ms", 1000.0, 2}},
+  {"time_step", {"Time Step", 0.00001, 0.0020, 0.0010, "ms", 1000.0, 3}},
   {"temperature", {"Temperature", 0.000, 15.000, 0.000, "kT", 1.0, 5}}
 };
 

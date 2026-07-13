@@ -24,6 +24,10 @@
 
 #include <filesystem>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 extern double centerCoords[3];
 
 namespace
@@ -52,6 +56,10 @@ namespace
         std::exit(1);
     }
 
+    // Only works on Linux/macOS: reads /proc/self/exe or resolves the executable
+    // path to determine the executable's directory.
+    std::string getExecutableDir();
+
     // Python is initialized lazily, only when the ASE calculator is first used.
     // We configure it to use the bundled virtual environment so ASE and its
     // dependencies are found correctly regardless of the system Python.
@@ -64,9 +72,24 @@ namespace
             config.use_environment = 1;
 
             // Point to the venv Python so sys.path picks up the right site-packages.
-            config.program_name = Py_DecodeLocale(
-                "./haptic-device/uma_env/bin/python",
-                NULL);
+            // Resolved relative to the executable (not the current working
+            // directory) so this works regardless of where the binary is launched
+            // from, e.g. the launcher's own directory.
+            std::filesystem::path venvPython;
+            std::string executableDir = getExecutableDir();
+            if (!executableDir.empty()) {
+                venvPython = std::filesystem::path(executableDir) / ".." / ".." /
+                             "haptic-device" / "uma_env" / "bin" / "python";
+                // Normalize lexically only -- do NOT resolve symlinks here.
+                // uma_env/bin/python is itself a symlink to the base
+                // interpreter, and CPython locates the venv by finding
+                // pyvenv.cfg next to that symlink; canonicalizing away the
+                // symlink makes it look like the system Python instead.
+                venvPython = venvPython.lexically_normal();
+            } else {
+                venvPython = "./haptic-device/uma_env/bin/python";
+            }
+            config.program_name = Py_DecodeLocale(venvPython.string().c_str(), NULL);
 
             config.module_search_paths_set = 0;
 
@@ -285,18 +308,27 @@ namespace
         return parsedKwargs;
     }
 
-    // Only works on Linux: reads /proc/self/exe to determine the executable's directory.
+    // Determines the executable's directory so Python/module paths can be
+    // resolved regardless of the process's current working directory.
     std::string getExecutableDir()
     {
         char buffer[4096];
+#if defined(__APPLE__)
+        uint32_t size = sizeof(buffer);
+        if (_NSGetExecutablePath(buffer, &size) != 0)
+        {
+            return "";
+        }
+        std::string executablePath(buffer);
+#else
         ssize_t length = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
         if (length <= 0)
         {
             return "";
         }
-
         buffer[length] = '\0';
         std::string executablePath(buffer);
+#endif
         size_t separator = executablePath.find_last_of('/');
         if (separator == std::string::npos)
         {
@@ -330,7 +362,7 @@ namespace
         } else if (spec.rfind("uma", 0) == 0) {
             // UMA is Meta's universal ML potential. Its constructor takes the full
             // spec string directly, so we pass it through as kwargs.
-            moduleName = "uma_wrapper";
+            moduleName = "calculator";
             className = "create_calculator";
             kwargsText = spec;
         } else {
@@ -338,7 +370,7 @@ namespace
             size_t firstColon = spec.find(':');
             if (firstColon == std::string::npos) {
                 std::cerr << "ASE calculator spec must be empty, a known alias "
-                            "(`lj`, `morse`, `emt`, `uma`), or `module:Class[:kwargs]`."
+                            "(`lj`, `morse`, `emt`, `uma`, `uma-remote`), or `module:Class[:kwargs]`."
                         << std::endl;
                 std::exit(1);
             }
@@ -376,15 +408,15 @@ namespace
         Py_DECREF(pathStr);
 
         // Load ASE and grab the Atoms class now so we don't repeat this on every frame.
-        aseModule = importModule("ase");
+        aseModule = importModule(spec == "uma-remote" ? "calculator" : "ase");
         atomsClass = getCallable(aseModule, "Atoms");
 
         PyObject *calcArgs = PyTuple_New(0);
         PyObject *calcKwargs = nullptr;
 
-        if (moduleName == "uma_wrapper" && className == "create_calculator") {
+        if (moduleName == "calculator" && className == "create_calculator") {
             // UMA's factory function handles its own construction from the spec string.
-            PyObject *wrapperModule = importModule("uma_wrapper");
+            PyObject *wrapperModule = importModule("calculator");
             PyObject *resolver = getCallable(wrapperModule, "create_calculator");
 
             PyObject *specObj = PyUnicode_FromString(kwargsText.c_str());
@@ -768,13 +800,17 @@ namespace
 //
 // The script prints: atom count, positions (Nx3), atomic numbers (N),
 // cell matrix (3x3 flattened), and PBC flags (3 booleans).
-AseStructureData loadAseStructure(const std::string &filename)
+AseStructureData loadAseStructure(const std::string &filename,
+                                  const std::array<int, 3> &repeat)
 {
     AseStructureData structure;
     const std::string scriptPath = resolveAseFileIoScript();
     const std::string pythonExecutable = resolveAsePythonExecutable();
     const std::string command =
-        quoteForShell(pythonExecutable) + " " + quoteForShell(scriptPath) + " " + quoteForShell(filename);
+        quoteForShell(pythonExecutable) + " " + quoteForShell(scriptPath) + " " + quoteForShell(filename)
+        + " " + std::to_string(repeat[0])
+        + " " + std::to_string(repeat[1])
+        + " " + std::to_string(repeat[2]);
     std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(command.c_str(), "r"), pclose);
     if (!pipe) {
         throw std::runtime_error("Failed to start ASE structure loader helper.");
